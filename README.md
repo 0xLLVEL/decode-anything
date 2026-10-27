@@ -135,8 +135,19 @@ All 85+ test cases pass:
 
 ---
 
+## 🙏 Acknowledgments & Credits
+
+This project is built upon the foundational reverse-engineering research and core architecture pioneered by **dawwinci** (Andrei Amariei):
+- **Research Article**: [*Static decoding of IonCube PHP 8.x payloads*](https://www.amariei.org/ioncube-php8-static-decode.html)
+- **Base Repository**: [`dawwinci/ioncube-php8-decompiler`](https://github.com/dawwinci/ioncube-php8-decompiler)
+
+Immense gratitude to their ground-breaking research in dissecting IonCube's modern loader architecture, opcode XOR mechanics, and AST reconstruction patterns.
+
+---
+
 ## ⚖️ Disclaimer & License
 
 This tool is created for security research, software interoperability, educational analysis, and recovery of lost source code. Ensure you have the legal right or explicit permission to reverse-engineer any binaries you analyze.
 
 Distributed under the [MIT License](LICENSE).
+
