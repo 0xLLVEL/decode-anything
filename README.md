@@ -135,6 +135,32 @@ All 85+ test cases pass:
 
 ---
 
+## 🗺️ Roadmap
+
+`Decode-Anything` aims to live up to its name as a unified, multi-ecosystem reverse-engineering and deobfuscation suite. Future development milestones include:
+
+### 1. 🛡️ SourceGuardian (ixed) Decoder
+- [ ] Envelope decryption and payload extraction for SourceGuardian PHP 7.x & 8.x (`sg11` / `sg14`).
+- [ ] Static Zend bytecode disassembler and custom opcode translation table mapping.
+- [ ] Control-flow restructuring and de-virtualization of protected user functions.
+- [ ] Full integration into the existing AST reconstructor pipeline.
+
+### 2. ⚡ Advanced JavaScript Deobfuscator Engine
+- [ ] **javascript-obfuscator (obfuscator.io)**:
+  - String array extraction, rotation undoing, and proxy function inlining.
+  - Control Flow Flattening (CFF) state machine unflattening via control-flow graph (CFG) analysis.
+  - Dead code injection removal and opaque predicate evaluation.
+- [ ] **Enterprise & Web Obfuscators**:
+  - Unpacking patterns for JScrambler and common commercial JS packers.
+  - JS VM-based de-virtualization for custom interpreter stubs.
+  - Bundle unpacker and scope regenerator for Webpack, Vite, and Rollup minified distributions.
+
+### 3. 🧩 Unified Engine & Plugin System
+- [ ] Single CLI (`decode-anything <file>`) with automatic magic-byte and format detection.
+- [ ] Web UI / Interactive playground for side-by-side deobfuscation inspection.
+
+---
+
 ## 🙏 Acknowledgments & Credits
 
 This project is built upon the foundational reverse-engineering research and core architecture pioneered by **dawwinci** (Andrei Amariei):
