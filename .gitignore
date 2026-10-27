@@ -1,0 +1,40 @@
+# Bytecode & Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary dumps and intermediate files
+*.icdump.json
+*.icdump.txt
+dump_*/
+scratch/
+scratch_*.py
+temp/
+tmp/
+*.bak
+*.tmp
+*.log
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Agent & Brain Metadata
+.gemini/
+.agents/

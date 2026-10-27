@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "php-reconstructor"
+version = "0.1.0"
+description = "Reconstruct PHP source code from PHP 8.1 opcode dumps (icdump-ir-v1 JSON)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "sabin" }]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Disassemblers",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+php-reconstruct = "php_reconstructor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
