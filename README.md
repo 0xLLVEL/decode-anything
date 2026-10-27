@@ -132,7 +132,6 @@ All 85+ test cases pass:
   - `src/php_reconstructor/decompiler/` — Opcode handlers, control-flow structurer, and optimization passes.
   - `src/php_reconstructor/emitter/` — High-fidelity PHP code emitter.
   - `tests/` — Automated test suite.
-- [`decoded_spondonit/`](decoded_spondonit/) — Sample reconstructed packages demonstrating complete code recovery.
 
 ---
 

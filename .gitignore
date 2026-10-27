@@ -18,6 +18,10 @@ tmp/
 *.bak
 *.tmp
 *.log
+*.reconstructed.php
+*.reconstructed.*
+decoded_*/
+
 
 # Virtual Environments
 .env
