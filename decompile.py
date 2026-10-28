@@ -27,6 +27,7 @@ from php_reconstructor.loader.json_loader import parse_dump
 from php_reconstructor.decompiler.program import decompile_program
 from php_reconstructor.decompiler.optimize import optimize
 from php_reconstructor.emitter.php_emitter import emit_php
+from detector import scan_project, print_scan_report
 
 
 def _extract_and_apply_imports(
@@ -380,12 +381,53 @@ def decompile_file(
 
 
 def main() -> int:
+    # Check if invoked as `scan` subcommand: python decompile.py scan <path>
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "scan":
+        scan_parser = argparse.ArgumentParser(
+            prog="python decompile.py scan",
+            description="Scan a project or file to detect encoded/obfuscated PHP files (ionCube, SourceGuardian, Zend, Bolt, etc.)",
+        )
+        scan_parser.add_argument("path", type=Path, help="Project directory or PHP file to scan")
+        scan_parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+        scan_parser.add_argument("-d", "--decompile", action="store_true", help="Auto-decompile detected ionCube files")
+        scan_parser.add_argument("-o", "--output", type=Path, help="Output directory when decompiling")
+        scan_parser.add_argument("--php-version", type=int, choices=(81, 82, 83, 84))
+        scan_parser.add_argument("--loader-dll", type=Path)
+        args = scan_parser.parse_args(sys.argv[2:])
+
+        if not args.path.exists():
+            print(f"Error: path not found: {args.path}", file=sys.stderr)
+            return 1
+
+        report = scan_project(args.path)
+        print_scan_report(report, as_json=args.json)
+
+        if args.decompile and report.encoded_count > 0:
+            ioncube_items = [f for f in report.encoded_files if f.match.name == "ionCube"]
+            if ioncube_items:
+                print(f"\n[*] Starting auto-decompilation of {len(ioncube_items)} ionCube file(s)...")
+                for idx, f_info in enumerate(ioncube_items, 1):
+                    out_f = (args.output / f_info.relative_path) if args.output else f_info.path.with_name(f"{f_info.path.stem}.reconstructed.php")
+                    print(f"[{idx}/{len(ioncube_items)}] Decompiling: {f_info.relative_path} ... ", end="", flush=True)
+                    ok, syn_ok, err = decompile_file(
+                        f_info.path,
+                        output_path=out_f,
+                        php_version=args.php_version,
+                        loader_dll=args.loader_dll,
+                        silent_header=True,
+                    )
+                    st = "PASS" if syn_ok else ("SUCCESS" if ok else "FAILED")
+                    print(f"[{st}]")
+        return 0
+
     parser = argparse.ArgumentParser(
         description="Unified IonCube PHP 8.1 - 8.4 Decompiler (Single File & Batch Directory)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("input", type=Path, help="Target PHP file or directory to decompile")
     parser.add_argument("-o", "--output", type=Path, help="Output file or directory (preserves tree structure)")
+    parser.add_argument("--scan", action="store_true", help="Scan target for encoded/obfuscated files instead of decompiling")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format (when used with --scan)")
     parser.add_argument("--in-place", action="store_true", help="Overwrite IonCube files in place with decompiled PHP")
     parser.add_argument("--no-backup", action="store_true", help="Do not create .bak files when using --in-place")
     parser.add_argument("--no-copy-other", action="store_true", help="Do not copy non-IonCube files to output directory")
@@ -399,6 +441,11 @@ def main() -> int:
     if not input_path.exists():
         print(f"Error: path not found: {input_path}", file=sys.stderr)
         return 1
+
+    if args.scan:
+        report = scan_project(input_path)
+        print_scan_report(report, as_json=args.json)
+        return 0
 
     # Single file mode
     if input_path.is_file():

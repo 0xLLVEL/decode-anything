@@ -106,6 +106,35 @@ python decompile.py sample.php --php-version 83
 
 ---
 
+## 🔍 Project Scanner (Encoder Discovery)
+
+Easily audit an entire codebase or vendor directory to discover which files are encoded or obfuscated:
+
+```bash
+python decompile.py scan path/to/project/
+```
+
+Supported encoder detections:
+- **ionCube**: Detects bytecode headers (`HR+c`) and loader bootstrap banners across PHP 8.1–8.4.
+- **SourceGuardian**: Detects `sg_load(` loader calls and binary signatures.
+- **Zend Guard**: Detects Zend Guard Engine wrappers and binary headers.
+- **PHP Bolt**: Detects `bolt_encrypt` / `boltr_` runtime hooks.
+- **General Obfuscators & Packers**: Detects heavy variable scrambling (e.g. Yakpro-Po) and `eval(base64_decode(...))` packers.
+
+#### JSON Output (for CI/CD and automated pipelines)
+```bash
+python decompile.py scan path/to/project/ --json
+```
+
+#### Scan and Auto-Decompile
+Automatically scan a project and decompile all discovered IonCube files into a specified output directory:
+```bash
+python decompile.py scan path/to/project/ -d -o output/decoded_project/
+```
+
+
+---
+
 ## 🧪 Testing & Validation
 
 The core AST reconstructor includes a comprehensive unit test suite covering complex PHP 8 expressions, nested control flow, variable-variables (`$$var`, `${...}`), and closure bindings:
@@ -123,7 +152,8 @@ All 85+ test cases pass:
 
 ## 📂 Repository Structure
 
-- [`decompile.py`](decompile.py) — Unified CLI entry point for single-file and directory batch decompilation.
+- [`decompile.py`](decompile.py) — Unified CLI entry point for scanning, single-file, and directory batch decompilation.
+- [`detector/`](detector/) — Multi-encoder signature scanner and format analyzer (ionCube, SourceGuardian, Zend, Bolt, Obfuscators).
 - [`dump_plain_file_static.py`](dump_plain_file_static.py) — Core static opcode dumper and loader table decipherer.
 - [`decode_php_body.py`](decode_php_body.py) — Low-level Zend record deserializer and dynamic cipher0/basic decryptor.
 - [`decode_hrc_header.py`](decode_hrc_header.py) — Parser for IonCube file headers, body slices, and payload offsets.
