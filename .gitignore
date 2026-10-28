@@ -42,3 +42,7 @@ Desktop.ini
 # Agent & Brain Metadata
 .gemini/
 .agents/
+AGENTS.md
+agents.md
+AGENTS*.md
+
