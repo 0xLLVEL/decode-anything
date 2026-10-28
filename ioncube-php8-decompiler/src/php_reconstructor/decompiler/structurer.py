@@ -276,12 +276,24 @@ class RangeDecompiler:
             self._emit_goto(i, op, target)
             return i + 1
         if target <= i:
-            # Back edge without conditional: while(true)-style loop tail.
-            sink = self.ctx.current_sink()
-            body: list[php.Stmt] = []
-            while sink and sink[-1][0] >= target:
-                body.insert(0, sink.pop()[1])
-            self.ctx.emit(i, php.WhileStmt(cond=php.Literal(True), body=body))
+            # Check if any outside instruction jumps into [target, i].
+            # If so, wrapping in while(true) causes fatal PHP error:
+            # "'goto' into loop or switch statement is disallowed"
+            has_outside_jump = any(
+                t in range(target, i + 1)
+                for other_i, other_op in enumerate(self.ops)
+                if (other_i < target or other_i > i)
+                for t in (other_op.jump_targets or [])
+            )
+            if not has_outside_jump:
+                # Back edge without conditional: while(true)-style loop tail.
+                sink = self.ctx.current_sink()
+                body: list[php.Stmt] = []
+                while sink and sink[-1][0] >= target:
+                    body.insert(0, sink.pop()[1])
+                self.ctx.emit(i, php.WhileStmt(cond=php.Literal(True), body=body))
+                return i + 1
+            self._emit_goto(i, op, target)
             return i + 1
         self._emit_goto(i, op, target)
         return i + 1

@@ -239,32 +239,35 @@ def clean_php_source(raw_php: str) -> str:
                 if j < n and 'ZEND_CATCH' in lines[j]:
                     has_zend_catch = True
                     j += 1
-                catch_start = j
-                while j < n and not lines[j].strip().startswith(target_label):
-                    catch_lines_scan = lines[j].strip()
-                    if catch_lines_scan.startswith(('function', 'public', 'private', 'protected', 'class')):
-                        break
-                    j += 1
-                if j < n and lines[j].strip().startswith(target_label) and (j - catch_start) < 20:
-                    raw_catch_lines = lines[catch_start:j]
-                    catch_lines = []
-                    trailing_outer = []
-                    found_outer = False
-                    for cl in raw_catch_lines:
-                        cl_s = cl.strip()
-                        if found_outer or cl_s.startswith('}') or cl_s.startswith('else'):
-                            found_outer = True
-                            trailing_outer.append(cl)
-                        else:
-                            catch_lines.append(cl)
-                    catch_text = "\n".join(catch_lines)
-                    if has_zend_catch or any(t in catch_text for t in ('$e', '$exception', 'Log::', 'rollBack', 'wipe', 'json', 'abort', 'false', 'getMessage')):
+                if has_zend_catch:
+                    catch_start = j
+                    while j < n and not lines[j].strip().startswith(target_label):
+                        catch_lines_scan = lines[j].strip()
+                        if catch_lines_scan.startswith(('function', 'public', 'private', 'protected', 'class', 'trait', 'interface')):
+                            break
+                        j += 1
+                    if j < n and lines[j].strip().startswith(target_label) and (j - catch_start) < 20:
+                        raw_catch_lines = lines[catch_start:j]
+                        catch_lines = []
+                        trailing_outer = []
+                        found_outer = False
+                        for cl in raw_catch_lines:
+                            cl_s = cl.strip()
+                            if found_outer or cl_s.startswith('}') or cl_s.startswith('else'):
+                                found_outer = True
+                                trailing_outer.append(cl)
+                            else:
+                                catch_lines.append(cl)
+                        catch_text = "\n".join(catch_lines)
                         k = len(out) - 1
                         brace_depth = 0
                         paren_depth = 0
                         bracket_depth = 0
                         while k >= 0:
                             s = out[k].strip()
+                            if s.startswith(('function', 'public', 'private', 'protected', 'class', 'trait', 'interface')):
+                                k += 1
+                                break
                             brace_depth += s.count('}') - s.count('{')
                             paren_depth += s.count(')') - s.count('(')
                             bracket_depth += s.count(']') - s.count('[')
@@ -275,26 +278,31 @@ def clean_php_source(raw_php: str) -> str:
                                         or (brace_depth == 0 and paren_depth == 0 and bracket_depth == 0)):
                                     break
                             k -= 1
-                        if k < 0:
-                            k = len(out) - 1
-                        try_lines = out[k:]
-                        del out[k:]
-                        exc_var = "$exception" if "$exception" in catch_text else "$e"
-                        out.append(f"{indent}try {{")
-                        for tl in try_lines:
-                            out.append(f"    {tl}" if tl.strip() else "")
-                        out.append(f"{indent}}} catch (\\Exception {exc_var}) {{")
-                        for cl in catch_lines:
-                            out.append(f"{indent_inner}{cl.strip()}" if cl.strip() else "")
-                        out.append(f"{indent}}}")
-                        out.extend(trailing_outer)
-                        i = j + 1
-                        continue
+                        if 0 <= k < len(out):
+                            try_lines = out[k:]
+                            net_braces = sum(tl.count('{') - tl.count('}') for tl in try_lines)
+                            if net_braces == 0 and any(tl.strip() and not tl.strip().startswith(('//', '/*')) for tl in try_lines):
+                                del out[k:]
+                                exc_var = "$exception" if "$exception" in catch_text else "$e"
+                                out.append(f"{indent}try {{")
+                                for tl in try_lines:
+                                    out.append(f"    {tl}" if tl.strip() else "")
+                                out.append(f"{indent}}} catch (\\Exception {exc_var}) {{")
+                                for cl in catch_lines:
+                                    out.append(f"{indent_inner}{cl.strip()}" if cl.strip() else "")
+                                out.append(f"{indent}}}")
+                                out.extend(trailing_outer)
+                                i = j + 1
+                                continue
             out.append(line)
             i += 1
         return "\n".join(out)
 
     raw_php = _clean_try_catches(raw_php)
+
+    # In classes without extends, replace parent:: with self::
+    if not re.search(r'\bclass\s+\w+\s+extends\b', raw_php):
+        raw_php = re.sub(r'\bparent::', 'self::', raw_php)
 
     # 6. Clean up unreachable duplicate returns (e.g. `return $x;\n return null;`)
     def _clean_duplicate_returns(code: str) -> str:

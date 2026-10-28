@@ -80,19 +80,52 @@ def _load_handler_tables(dll_path: Path | None, php_version: int = 81) -> Loader
     return None
 
 
+def _detect_descriptor_delta(
+    sample_records: list[tuple],
+    request_key: int,
+    serialization_version: int,
+    php_flags: int,
+) -> int:
+    """Detect whether opcode stream delta is 2 or 4 (dual-loader bundles use 4)."""
+    VALID_TERMINALS = {62, 111, 149, 161}
+    scores = {2: 0, 4: 0}
+    for delta in (2, 4):
+        for rec, inner in sample_records:
+            if inner is None or inner.block.opcode_count < 1:
+                continue
+            try:
+                xor = build_php81_opcode_xor_stream(
+                    inner.block, inner.metadata,
+                    outer=rec,
+                    request_key=request_key,
+                    serialization_version=serialization_version,
+                    header_flags=php_flags,
+                    descriptor_delta=delta,
+                )
+                if xor.decoded_opcode_bytes and xor.decoded_opcode_bytes[-1] in VALID_TERMINALS:
+                    scores[delta] += 1
+            except Exception:
+                pass
+    best = 4 if scores[4] > scores[2] else 2
+    print(f"opcode stream descriptor delta: {best}  (scores: {scores})")
+    return best
+
+
 def _detect_handler_variant(
     handler_tables: LoaderHandlerTables,
     decoded,
-    xor_stream,
+    xor_stream=None,
 ) -> int:
     """Try all 7 handler variants; return the one with fewest ambiguous decodes (ties: most ok)."""
-    import struct as _struct
-
     def u32(v: int) -> int:
         return v & 0xFFFFFFFF
 
-    opcodes = decoded.opcodes
-    opcode_count = len(opcodes)
+    if xor_stream is not None:
+        samples = [(decoded, xor_stream)]
+    elif isinstance(decoded, list):
+        samples = decoded
+    else:
+        samples = [(decoded, xor_stream)]
 
     best_variant = 0
     best_ambig = 10 ** 9
@@ -101,22 +134,27 @@ def _detect_handler_variant(
     for variant in range(len(handler_tables.VARIANT_TABLES)):
         ok = 0
         ambig = 0
-        for i, opline in enumerate(opcodes):
-            if opline.handler_word is None:
+        for sample_dec, sample_xor in samples:
+            if sample_dec is None or sample_xor is None:
                 continue
-            hk = handler_key_dword_for_index(xor_stream.key_bytes, opcode_count, i)
-            if opline.handler_word == u32(~hk):
-                continue  # direct-handler — always correct
-            next_opline = opcodes[i + 1] if i + 1 < opcode_count else None
-            try:
-                hidx = handler_tables.decode_handler_index(opline.handler_word, hk, variant)
-                cands = handler_tables.opcode_candidates_for_handler_index(hidx, opline, next_opline)
-                if len(cands) == 1:
-                    ok += 1
-                else:
+            opcodes = sample_dec.opcodes
+            opcode_count = len(opcodes)
+            for i, opline in enumerate(opcodes):
+                if opline.handler_word is None:
+                    continue
+                hk = handler_key_dword_for_index(sample_xor.key_bytes, opcode_count, i)
+                if opline.handler_word == u32(~hk):
+                    continue  # direct-handler — always correct
+                next_opline = opcodes[i + 1] if i + 1 < opcode_count else None
+                try:
+                    hidx = handler_tables.decode_handler_index(opline.handler_word, hk, variant)
+                    cands = handler_tables.opcode_candidates_for_handler_index(hidx, opline, next_opline)
+                    if len(cands) == 1:
+                        ok += 1
+                    else:
+                        ambig += 1
+                except Exception:
                     ambig += 1
-            except Exception:
-                ambig += 1
 
         if ambig < best_ambig or (ambig == best_ambig and ok > best_ok):
             best_ambig = ambig
@@ -349,6 +387,7 @@ def _dump_function(
     opcode_names: dict,
     handler_tables: LoaderHandlerTables | None = None,
     handler_variant: int | None = None,
+    descriptor_delta: int = 2,
     php_flags: int = 0,
     php_version: int = 81,
 ):
@@ -359,6 +398,7 @@ def _dump_function(
         request_key=request_key,
         serialization_version=serialization_version,
         header_flags=php_flags,
+        descriptor_delta=descriptor_delta,
     )
     decoded = decode_opcode_block(
         inner.block, inner.metadata,
@@ -771,6 +811,7 @@ def _extract_nested_closures(
     php_version: int,
     handler_tables=None,
     handler_variant=None,
+    descriptor_delta: int = 2,
     resolver=None,
     op_arrays: dict,
     all_methods_text: list,
@@ -807,6 +848,7 @@ def _extract_nested_closures(
                     opcode_names=opcode_names,
                     handler_tables=handler_tables,
                     handler_variant=handler_variant,
+                    descriptor_delta=descriptor_delta,
                     php_flags=php_flags,
                     php_version=php_version,
                 )
@@ -840,6 +882,7 @@ def _extract_nested_closures(
                 php_version=php_version,
                 handler_tables=handler_tables,
                 handler_variant=handler_variant,
+                descriptor_delta=descriptor_delta,
                 resolver=resolver,
                 op_arrays=op_arrays,
                 all_methods_text=all_methods_text,
@@ -893,28 +936,73 @@ def dump_file_to_ir(
     # ── main record ───────────────────────────────────────────────────────────
     main_rec = extract_dynamic_main_record(body, php_flags=php_flags, offset=0)
     dec_main_blob, main_state, main_inner = _decrypt_blob(main_rec)
+
+    # ── auto-detect descriptor delta & handler variant across samples ─────────
+    sample_records = []
+    if main_inner is not None:
+        sample_records.append((main_rec, main_inner))
+
+    after_main_scan = main_rec.end_offset
+    fn_cnt_peek = struct.unpack_from("<H", body, after_main_scan)[0] if after_main_scan + 2 <= len(body) else 0
+    fn_scan_peek = after_main_scan + 2
+    for _, fn_rec in _parse_function_records(body, php_flags=php_flags, start_offset=fn_scan_peek, count=fn_cnt_peek):
+        fn_scan_peek = fn_rec.end_offset
+        if len(sample_records) < 5:
+            _, _, fn_inner = _decrypt_blob(fn_rec)
+            if fn_inner is not None:
+                sample_records.append((fn_rec, fn_inner))
+
+    if fn_scan_peek + 2 <= len(body):
+        cls_cnt_peek = struct.unpack_from("<H", body, fn_scan_peek)[0]
+        if cls_cnt_peek:
+            cls_scan_peek = fn_scan_peek + 2
+            try:
+                hdr_peek = _parse_class_record_header(body, cls_scan_peek)
+                mscan_peek = hdr_peek["first_method_offset"]
+                for _ in range(min(5, hdr_peek["method_count"])):
+                    try:
+                        mrec_peek = extract_dynamic_main_record(b"\x00\x00\x00\x00" + body[mscan_peek:], php_flags=php_flags, offset=0)
+                        real_end_peek = mscan_peek + mrec_peek.end_offset - 4
+                        _, _, minner_peek = _decrypt_blob(mrec_peek)
+                        if minner_peek is not None:
+                            sample_records.append((mrec_peek, minner_peek))
+                        mscan_peek = real_end_peek
+                    except Exception:
+                        break
+            except Exception:
+                pass
+
+    descriptor_delta = _detect_descriptor_delta(sample_records, request_key, sv, php_flags)
+
+    if handler_tables is not None and sv >= 6:
+        decoded_samples = []
+        for srec, sinner in sample_records:
+            try:
+                sxor = build_php81_opcode_xor_stream(
+                    sinner.block, sinner.metadata,
+                    outer=srec,
+                    request_key=request_key,
+                    serialization_version=sv,
+                    header_flags=php_flags,
+                    descriptor_delta=descriptor_delta,
+                )
+                sdec = decode_opcode_block(
+                    sinner.block, sinner.metadata,
+                    serialization_version=sv,
+                    opcode_xor=sxor.xor_bytes,
+                    opcode_names=opcode_names,
+                    header_flags=php_flags,
+                )
+                decoded_samples.append((sdec, sxor))
+            except Exception:
+                pass
+        if decoded_samples:
+            handler_variant = _detect_handler_variant(handler_tables, decoded_samples)
+
     if main_inner is not None:
         if resolver:
             resolve_interned_literal_strings(main_inner.literals, resolver)
             resolve_interned_type_names(main_inner.arg_type_info, resolver)
-
-        # Detect handler variant once from the main op array
-        if handler_tables is not None and sv >= 6:
-            _xor_tmp = build_php81_opcode_xor_stream(
-                main_inner.block, main_inner.metadata,
-                outer=main_rec,
-                request_key=request_key,
-                serialization_version=sv,
-                header_flags=php_flags,
-            )
-            _dec_tmp = decode_opcode_block(
-                main_inner.block, main_inner.metadata,
-                serialization_version=sv,
-                opcode_xor=_xor_tmp.xor_bytes,
-                opcode_names=opcode_names,
-                header_flags=php_flags,
-            )
-            handler_variant = _detect_handler_variant(handler_tables, _dec_tmp, _xor_tmp)
 
         raw, text = _dump_function(
             main_rec, main_inner,
@@ -923,6 +1011,7 @@ def dump_file_to_ir(
             opcode_names=opcode_names,
             handler_tables=handler_tables,
             handler_variant=handler_variant,
+            descriptor_delta=descriptor_delta,
             php_flags=php_flags,
             php_version=php_version,
         )
@@ -943,6 +1032,7 @@ def dump_file_to_ir(
             opcode_names=opcode_names,
             handler_tables=handler_tables,
             handler_variant=handler_variant,
+            descriptor_delta=descriptor_delta,
             php_flags=php_flags,
             php_version=target_php_version,
             resolver=resolver,
@@ -994,6 +1084,7 @@ def dump_file_to_ir(
                 opcode_names=opcode_names,
                 handler_tables=handler_tables,
                 handler_variant=handler_variant,
+                descriptor_delta=descriptor_delta,
                 php_flags=php_flags,
                 php_version=php_version,
             )
@@ -1024,6 +1115,7 @@ def dump_file_to_ir(
             opcode_names=opcode_names,
             handler_tables=handler_tables,
             handler_variant=handler_variant,
+            descriptor_delta=descriptor_delta,
             php_flags=php_flags,
             php_version=target_php_version,
             resolver=resolver,
@@ -1157,6 +1249,7 @@ def dump_file_to_ir(
                             opcode_names=opcode_names,
                             handler_tables=handler_tables,
                             handler_variant=handler_variant,
+                            descriptor_delta=descriptor_delta,
                             php_flags=php_flags,
                             php_version=php_version,
                         )
@@ -1195,6 +1288,7 @@ def dump_file_to_ir(
                         opcode_names=opcode_names,
                         handler_tables=handler_tables,
                         handler_variant=handler_variant,
+                        descriptor_delta=descriptor_delta,
                         php_flags=php_flags,
                         php_version=target_php_version,
                         resolver=resolver,
