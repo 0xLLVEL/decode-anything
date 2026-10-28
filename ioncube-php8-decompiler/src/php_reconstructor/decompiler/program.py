@@ -26,7 +26,7 @@ def decompile_program(program: Program) -> php.PhpFile:
     php_file = php.PhpFile()
     if program.source_file:
         php_file.header_comment = (
-            f"Reconstructed by php_reconstructor from opcode dump of:\n{program.source_file}"
+            f"decoded by https://github.com/0xLLVEL/decode-anything\n{program.source_file}"
         )
 
     consumed_closures: set[str] = set()
