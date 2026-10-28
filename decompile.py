@@ -31,6 +31,47 @@ from php_reconstructor import ast as php
 from detector import scan_project, print_scan_report
 
 
+LARAVEL_FACADES = {
+    "App": "Illuminate\\Support\\Facades\\App",
+    "Artisan": "Illuminate\\Support\\Facades\\Artisan",
+    "Auth": "Illuminate\\Support\\Facades\\Auth",
+    "Blade": "Illuminate\\Support\\Facades\\Blade",
+    "Broadcast": "Illuminate\\Support\\Facades\\Broadcast",
+    "Bus": "Illuminate\\Support\\Facades\\Bus",
+    "Cache": "Illuminate\\Support\\Facades\\Cache",
+    "Config": "Illuminate\\Support\\Facades\\Config",
+    "Cookie": "Illuminate\\Support\\Facades\\Cookie",
+    "Crypt": "Illuminate\\Support\\Facades\\Crypt",
+    "Date": "Illuminate\\Support\\Facades\\Date",
+    "DB": "Illuminate\\Support\\Facades\\DB",
+    "Event": "Illuminate\\Support\\Facades\\Event",
+    "File": "Illuminate\\Support\\Facades\\File",
+    "Gate": "Illuminate\\Support\\Facades\\Gate",
+    "Hash": "Illuminate\\Support\\Facades\\Hash",
+    "Http": "Illuminate\\Support\\Facades\\Http",
+    "Lang": "Illuminate\\Support\\Facades\\Lang",
+    "Log": "Illuminate\\Support\\Facades\\Log",
+    "Mail": "Illuminate\\Support\\Facades\\Mail",
+    "Notification": "Illuminate\\Support\\Facades\\Notification",
+    "Password": "Illuminate\\Support\\Facades\\Password",
+    "Queue": "Illuminate\\Support\\Facades\\Queue",
+    "RateLimiter": "Illuminate\\Support\\Facades\\RateLimiter",
+    "Redirect": "Illuminate\\Support\\Facades\\Redirect",
+    "Request": "Illuminate\\Support\\Facades\\Request",
+    "Response": "Illuminate\\Support\\Facades\\Response",
+    "Route": "Illuminate\\Support\\Facades\\Route",
+    "Schema": "Illuminate\\Support\\Facades\\Schema",
+    "Session": "Illuminate\\Support\\Facades\\Session",
+    "Storage": "Illuminate\\Support\\Facades\\Storage",
+    "URL": "Illuminate\\Support\\Facades\\URL",
+    "Validator": "Illuminate\\Support\\Facades\\Validator",
+    "View": "Illuminate\\Support\\Facades\\View",
+    "Carbon": "Carbon\\Carbon",
+    "Str": "Illuminate\\Support\\Str",
+    "Arr": "Illuminate\\Support\\Arr",
+}
+
+
 def _extract_and_apply_imports(
     php_code: str,
     namespace: str | None = None,
@@ -72,13 +113,32 @@ def _extract_and_apply_imports(
     for c in collisions:
         imports.pop(c, None)
 
+    # Auto-detect unimported standard Laravel facades
+    for short, fqcn in LARAVEL_FACADES.items():
+        if short in declared_classes or short in imports or short in collisions:
+            continue
+        parts_fqcn = fqcn.split('\\')
+        ns_of_class = '\\'.join(parts_fqcn[:-1])
+        if namespace and ns_of_class.lower() == namespace.lower():
+            continue
+        facade_pattern = re.compile(
+            r'(?<![A-Za-z0-9_])(?:\\)?' + re.escape(short) + r'(?:::|\s+\$[A-Za-z0-9_]+)'
+        )
+        used = False
+        for i in range(0, len(parts), 2):
+            if facade_pattern.search(parts[i]):
+                used = True
+                break
+        if used:
+            imports[short] = fqcn
+
     if not imports:
         return php_code
 
     sorted_short_names = sorted(imports.keys(), key=lambda s: len(imports[s]), reverse=True)
     for short in sorted_short_names:
         full = imports[short]
-        sub_pat = re.compile(r'\\?' + re.escape(full) + r'\b')
+        sub_pat = re.compile(r'\\(?:' + re.escape(full) + r'|' + re.escape(short) + r')\b')
         for i in range(0, len(parts), 2):
             parts[i] = sub_pat.sub(short, parts[i])
 
