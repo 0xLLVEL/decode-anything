@@ -52,8 +52,6 @@ def _get_dll_candidates(dll_path: Path | None, php_version: int = 81) -> list[Pa
     candidates = [
         base / f"ioncube_loader_win_{ver_str}.dll",
         base.parents[1] / "runtime" / "ext" / f"ioncube_loader_win_{ver_str}.dll",
-        base / "ioncube_loader_win_8.1.dll",
-        base.parents[1] / "runtime" / "ext" / "ioncube_loader_win_8.1.dll",
     ]
     return [p for p in candidates if p.exists()]
 
@@ -70,13 +68,20 @@ def _load_handler_tables(dll_path: Path | None, php_version: int = 81) -> Loader
     for p in candidates:
         if p and p.exists():
             v = _infer_dll_version(p, default=php_version)
+            if v != php_version:
+                print(f"  warning: handler tables {p.name} target PHP {v}, expected PHP {php_version}")
             try:
                 ht = LoaderHandlerTables.from_dll(p, php_version=v)
+                ht.source_path = p
+                ht.loaded_php_version = v
                 print(f"handler tables: {p.name}")
                 return ht
             except Exception as exc:
                 print(f"  warning: handler tables failed for {p}: {exc}")
-    print("handler tables: not available (opcodes will not be handler-lane decoded)")
+    if php_version == 82:
+        print("handler tables: PHP 8.2 loader not bundled; pass --loader-dll ioncube_loader_win_8.2.dll")
+    else:
+        print(f"handler tables: not available for PHP {php_version} (opcodes will not be handler-lane decoded)")
     return None
 
 
@@ -361,14 +366,75 @@ def _load_resolver(dll_path: Path | None, php_version: int = 81) -> LoaderIntern
     for p in candidates:
         if p and p.exists():
             v = _infer_dll_version(p, default=php_version)
+            if v != php_version:
+                print(f"  warning: resolver {p.name} targets PHP {v}, expected PHP {php_version}")
             try:
                 r = LoaderInternedStringResolver.from_dll(p, php_version=v)
+                r.source_path = p
+                r.loaded_php_version = v
                 print(f"interned-string resolver: {p.name}")
                 return r
             except Exception as exc:
                 print(f"  warning: resolver failed for {p}: {exc}")
-    print("interned-string resolver: not available (null literals will remain unresolved)")
+    if php_version == 82:
+        print("interned-string resolver: PHP 8.2 loader not bundled; pass --loader-dll ioncube_loader_win_8.2.dll")
+    else:
+        print(f"interned-string resolver: not available for PHP {php_version} (null literals will remain unresolved)")
     return None
+
+
+def build_decompile_status(
+    php_version: int,
+    report_methods: list[dict],
+    resolver: LoaderInternedStringResolver | None = None,
+    handler_tables: LoaderHandlerTables | None = None,
+) -> dict:
+    """Summarize partial decoding and the loader files that were used."""
+    def state(entry: dict) -> str:
+        return str(entry.get("state", ""))
+
+    stubs = sum(1 for m in report_methods if state(m).startswith("stub:"))
+    opcode_errors = sum(1 for m in report_methods if state(m).startswith("opcode_error:"))
+    failed = sum(1 for m in report_methods if state(m) == "failed")
+    ok = len(report_methods) - stubs - opcode_errors - failed
+
+    resolver_path = getattr(resolver, "source_path", None)
+    resolver_version = getattr(resolver, "loaded_php_version", None)
+    handler_path = getattr(handler_tables, "source_path", None)
+    handler_version = getattr(handler_tables, "loaded_php_version", None)
+    loader_degraded = (
+        resolver is None
+        or handler_tables is None
+        or (resolver_version is not None and resolver_version != php_version)
+        or (handler_version is not None and handler_version != php_version)
+    )
+    problems = [
+        {"name": m.get("name", "?"), "state": state(m)}
+        for m in report_methods
+        if state(m).startswith("stub:")
+        or state(m).startswith("opcode_error:")
+        or state(m) == "failed"
+    ]
+    return {
+        "php_version": php_version,
+        "partial": bool(stubs or opcode_errors or failed or loader_degraded),
+        "methods": {
+            "total": len(report_methods),
+            "ok": ok,
+            "stubs": stubs,
+            "opcode_errors": opcode_errors,
+            "failed": failed,
+        },
+        "loader": {
+            "expected_php_version": php_version,
+            "resolver": str(resolver_path) if resolver_path is not None else None,
+            "resolver_php_version": resolver_version,
+            "handler_tables": str(handler_path) if handler_path is not None else None,
+            "handler_tables_php_version": handler_version,
+            "degraded": loader_degraded,
+        },
+        "problems": problems,
+    }
 
 
 def _parse_function_records(body: bytes, *, php_flags: int, start_offset: int, count: int):
@@ -1512,9 +1578,14 @@ def dump_file_to_ir(
             print(f"class_methods_total: {class_method_count}")
 
     # ── icdump-ir-v1 output ────────────────────────────────────────────────────
-    ok    = sum(1 for m in report_methods if "opcodes" in m)
-    stubs = sum(1 for m in report_methods if m.get("state", "").startswith("stub:"))
-    fails = sum(1 for m in report_methods if m.get("state") == "failed")
+    decompile_status = build_decompile_status(
+        target_php_version, report_methods, resolver, handler_tables
+    )
+    method_status = decompile_status["methods"]
+    ok = method_status["ok"]
+    stubs = method_status["stubs"]
+    fails = method_status["failed"]
+    opcode_errors = method_status["opcode_errors"]
 
     resolve_function_calls(op_arrays)
     for k in list(op_arrays.keys()):
@@ -1528,6 +1599,7 @@ def dump_file_to_ir(
             "function_count": len(function_index),
             "closure_count": closure_counter[0],
             "class_count": len(class_index),
+            "decompile_status": decompile_status,
         },
         "entry": "main",
         "op_arrays": op_arrays,
@@ -1546,7 +1618,8 @@ def dump_file_to_ir(
             json.dumps(icdump, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         (out_dir / f"{source.stem}.icdump.txt").write_text(combined_txt, encoding="utf-8")
-        print(f"\ndone: {ok} decoded, {stubs} stubs, {fails} failed, {closure_counter[0]} closures")
+        print(f"\ndone: {ok} decoded, {stubs} stubs, {fails} failed, "
+              f"{opcode_errors} opcode errors, {closure_counter[0]} closures")
         print(f"output: {out_dir}")
 
     return icdump, combined_txt, header_report

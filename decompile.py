@@ -124,8 +124,7 @@ def _invert_condition(cond: str) -> str:
 
 
 def _simplify_boolean_expressions(code: str) -> str:
-    """Algebraically simplify double negations like !(!A || B) or !(!A && !B)."""
-    code = re.sub(r'!\s*!\s*', '', code)
+    """Simplify negated boolean expressions with De Morgan patterns."""
     def repl_dm(m):
         full = m.group(0)
         prefix = m.group(1)
@@ -210,50 +209,6 @@ def _invert_empty_if_guards(code: str) -> str:
     res = "\n".join(out)
     res = re.sub(r'^[ \t]*if\s*\([^\)]+\)\s*\{\s*\}\s*\n', '', res, flags=re.MULTILINE)
     return res
-
-
-def _resolve_synthetic_returns(code: str) -> str:
-    """Universally fix invalid synthetic `return null;` based on function return type hints."""
-    lines = code.splitlines()
-    out = []
-    current_ret_type = None
-    is_constructor = False
-
-    for line in lines:
-        stripped = line.strip()
-        m_fn = re.search(r'function\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*(?::\s*([^\s{]+))?', stripped)
-        if m_fn:
-            fn_name = m_fn.group(1)
-            current_ret_type = m_fn.group(2)
-            is_constructor = fn_name == '__construct'
-
-        if stripped == 'return null;':
-            indent = line[:len(line) - len(line.lstrip())]
-            if is_constructor:
-                out.append(f"{indent}return;")
-                continue
-            if current_ret_type:
-                if current_ret_type.startswith('?'):
-                    out.append(line)
-                    continue
-                if current_ret_type == 'array':
-                    out.append(f"{indent}return [];")
-                    continue
-                elif current_ret_type == 'string':
-                    out.append(f"{indent}return '';")
-                    continue
-                elif current_ret_type == 'bool':
-                    out.append(f"{indent}return false;")
-                    continue
-                elif current_ret_type in ('int', 'float'):
-                    out.append(f"{indent}return 0;")
-                    continue
-                elif current_ret_type == 'void':
-                    out.append(f"{indent}return;")
-                    continue
-
-        out.append(line)
-    return "\n".join(out)
 
 
 def _normalize_psr4_namespaces(code: str, namespace: str | None = None) -> str:
@@ -434,7 +389,6 @@ def clean_php_source(raw_php: str) -> str:
     raw_php = re.sub(r'\b(?:self|parent)::\?\(\);', 'parent::__construct();', raw_php)
     raw_php = re.sub(r'\(\$\{None\}\)', '$_SERVER', raw_php)
     raw_php = re.sub(r'\$\{None\}', '$_SERVER', raw_php)
-    raw_php = re.sub(r'!\s*!', '', raw_php)
     raw_php = re.sub(r'^[ \t]*do\s*\{\s*\}\s*while\s*\([^\n]+\);\s*\n?', '', raw_php, flags=re.MULTILINE)
     raw_php = re.sub(r'^[ \t]*while\s*\([^\n]+\)\s*\{\s*\}\s*\n?', '', raw_php, flags=re.MULTILINE)
     raw_php = re.sub(r'\[null\s*=>\s*(\$[A-Za-z0-9_]+)\]', r"[\1]", raw_php)
@@ -531,7 +485,7 @@ def clean_php_source(raw_php: str) -> str:
             stripped = line.strip()
             if stripped in ('return;', 'return null;') and out:
                 prev = out[-1].strip()
-                if prev.startswith('return ') or prev in ('};', '}') or prev.startswith(('return;', 'return null;')):
+                if re.match(r'^return\b[^;]*;', prev):
                     continue
             out.append(line)
         return "\n".join(out)
@@ -603,11 +557,8 @@ def clean_php_source(raw_php: str) -> str:
     # 4d. Universally invert empty IF error guards
     raw_php = _invert_empty_if_guards(raw_php)
 
-    # 4e. Universally simplify double negations and De Morgan boolean expressions
+    # 4e. Simplify negated boolean expressions with De Morgan patterns
     raw_php = _simplify_boolean_expressions(raw_php)
-
-    # 4f. Universally resolve synthetic returns based on return type hints
-    raw_php = _resolve_synthetic_returns(raw_php)
 
     # 5. If namespace detected, format top of file cleanly
     if namespace:
@@ -717,6 +668,21 @@ def validate_php_syntax(php_file: Path) -> tuple[bool, str]:
 import shutil
 import time
 
+
+def _format_partial_status(status: dict) -> str:
+    methods = status.get("methods", {})
+    parts = [
+        f"{methods.get('ok', 0)}/{methods.get('total', 0)} methods clean",
+        f"{methods.get('stubs', 0)} stub(s)",
+        f"{methods.get('opcode_errors', 0)} opcode error(s)",
+        f"{methods.get('failed', 0)} failed method(s)",
+    ]
+    loader = status.get("loader", {})
+    if loader.get("degraded"):
+        parts.append(f"loader PHP {loader.get('expected_php_version')} missing/mismatched")
+    return ", ".join(parts)
+
+
 def decompile_file(
     input_path: Path,
     output_path: Path | None = None,
@@ -724,11 +690,11 @@ def decompile_file(
     php_version: int | None = None,
     loader_dll: Path | None = None,
     silent_header: bool = False,
-) -> tuple[bool, bool, str | None]:
+) -> tuple[bool, bool, str | None, dict]:
     """Decompile a single IonCube-encoded PHP file.
-    
+
     Returns:
-        (success: bool, syntax_ok: bool, error_msg: str | None)
+        (success, syntax_ok, error_msg, decompile_status)
     """
     if output_path is None:
         output_path = input_path.with_name(f"{input_path.stem}.reconstructed.php")
@@ -742,6 +708,7 @@ def decompile_file(
             loader_dll=loader_dll,
             save_files=False,
         )
+        decompile_status = icdump.get("summary", {}).get("decompile_status", {})
 
         prog = parse_dump(icdump)
         php_ast = decompile_program(prog)
@@ -793,12 +760,14 @@ def decompile_file(
         else:
             if not silent_header:
                 print(f"    [!] Syntax warning: {msg}")
-        return True, ok, None
+        if decompile_status.get("partial") and not silent_header:
+            print(f"    [!] Partial decode: {_format_partial_status(decompile_status)}")
+        return True, ok, None, decompile_status
     except Exception as exc:
         err_msg = str(exc)
         if not silent_header:
             print(f"    [-] Decompilation failed: {err_msg}")
-        return False, False, err_msg
+        return False, False, err_msg, {}
 
 
 def main() -> int:
@@ -830,14 +799,17 @@ def main() -> int:
                 for idx, f_info in enumerate(ioncube_items, 1):
                     out_f = (args.output / f_info.relative_path) if args.output else f_info.path.with_name(f"{f_info.path.stem}.reconstructed.php")
                     print(f"[{idx}/{len(ioncube_items)}] Decompiling: {f_info.relative_path} ... ", end="", flush=True)
-                    ok, syn_ok, err = decompile_file(
+                    ok, syn_ok, err, status = decompile_file(
                         f_info.path,
                         output_path=out_f,
                         php_version=args.php_version,
                         loader_dll=args.loader_dll,
                         silent_header=True,
                     )
-                    st = "PASS" if syn_ok else ("SUCCESS" if ok else "FAILED")
+                    if ok and status.get("partial"):
+                        st = f"PARTIAL: {_format_partial_status(status)}"
+                    else:
+                        st = "PASS" if syn_ok else ("SUCCESS" if ok else "FAILED")
                     print(f"[{st}]")
         return 0
 
@@ -877,7 +849,7 @@ def main() -> int:
                 if not backup.exists():
                     shutil.copy2(input_path, backup)
             out_target = input_path
-        success, syntax_ok, err = decompile_file(
+        success, syntax_ok, err, status = decompile_file(
             input_path,
             output_path=out_target,
             php_version=args.php_version,
@@ -944,7 +916,7 @@ def main() -> int:
 
         print(f"[{idx}/{len(ioncube_files)}] ({pct:5.1f}%) {rel} ... ", end="", flush=True)
 
-        success, syntax_ok, err = decompile_file(
+        success, syntax_ok, err, status = decompile_file(
             f,
             out_file,
             php_version=args.php_version,
@@ -955,7 +927,9 @@ def main() -> int:
         status_str = "SUCCESS" if success else "FAILED"
         syntax_str = "PASS" if syntax_ok else ("WARN" if success else "N/A")
         if success:
-            if syntax_ok:
+            if status.get("partial"):
+                print(f"[~] PARTIAL ({_format_partial_status(status)}; php -l: {syntax_str})")
+            elif syntax_ok:
                 print(f"[+] {status_str} (php -l: {syntax_str})")
             else:
                 print(f"[!] {status_str} (php -l: {syntax_str})")
@@ -967,6 +941,7 @@ def main() -> int:
             "success": success,
             "syntax_ok": syntax_ok,
             "error": err,
+            "status": status,
         })
 
     elapsed = time.time() - start_time
@@ -975,6 +950,7 @@ def main() -> int:
     success_count = sum(1 for r in results if r["success"])
     syntax_pass_count = sum(1 for r in results if r["syntax_ok"])
     failed_items = [r for r in results if not r["success"]]
+    partial_items = [r for r in results if r["success"] and r["status"].get("partial")]
 
     print("\n" + "=" * 60)
     print("  BATCH DECOMPILATION SUMMARY")
@@ -982,9 +958,15 @@ def main() -> int:
     print(f"  Total IonCube files  : {len(ioncube_files)}")
     print(f"  Successfully decoded : {success_count} / {len(ioncube_files)}")
     print(f"  Syntax Valid (php -l): {syntax_pass_count} / {success_count}")
+    print(f"  Partial decodes      : {len(partial_items)}")
     if args.output and not args.no_copy_other:
         print(f"  Other files mirrored : {copied_count}")
     print(f"  Total time elapsed   : {elapsed:.2f}s")
+
+    if partial_items:
+        print("\n  Partial Files:")
+        for it in partial_items:
+            print(f"    - {it['file']}: {_format_partial_status(it['status'])}")
 
     if failed_items:
         print("\n  Failed Files:")
