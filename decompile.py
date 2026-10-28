@@ -27,6 +27,7 @@ from php_reconstructor.loader.json_loader import parse_dump
 from php_reconstructor.decompiler.program import decompile_program
 from php_reconstructor.decompiler.optimize import optimize
 from php_reconstructor.emitter.php_emitter import emit_php
+from php_reconstructor import ast as php
 from detector import scan_project, print_scan_report
 
 
@@ -363,8 +364,39 @@ def decompile_file(
         prog = parse_dump(icdump)
         php_ast = decompile_program(prog)
         php_ast = optimize(php_ast)
-        raw_code = emit_php(php_ast)
-        final_code = clean_php_source(raw_code)
+
+        # Detect blade template (.blade.php) files composed of echo statements
+        is_blade = (
+            input_path.name.endswith(".blade.php")
+            or output_path.name.endswith(".blade.php")
+            or bool(prog.source_file and prog.source_file.endswith(".blade.php"))
+        )
+        def _to_text(val: Any) -> str | None:
+            if isinstance(val, str):
+                return val
+            if isinstance(val, (bytes, bytearray)):
+                try:
+                    return val.decode("utf-8")
+                except UnicodeDecodeError:
+                    return val.decode("latin-1", errors="replace")
+            return None
+
+        if is_blade and php_ast.statements and all(
+            isinstance(s, php.EchoStmt) and all(isinstance(e, php.Literal) and _to_text(e.value) is not None for e in s.exprs)
+            for s in php_ast.statements
+        ):
+            parts = []
+            for s in php_ast.statements:
+                for e in s.exprs:
+                    t = _to_text(e.value)
+                    if t is not None:
+                        parts.append(t)
+            final_code = "".join(parts).replace("\r\n", "\n")
+            if not final_code.endswith("\n"):
+                final_code += "\n"
+        else:
+            raw_code = emit_php(php_ast)
+            final_code = clean_php_source(raw_code)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(final_code, encoding="utf-8")
