@@ -13,6 +13,9 @@ htmlcov/
 dump_*/
 scratch/
 scratch_*.py
+scratch_*.php
+scratch_*
+spondonit/
 temp/
 tmp/
 *.bak
