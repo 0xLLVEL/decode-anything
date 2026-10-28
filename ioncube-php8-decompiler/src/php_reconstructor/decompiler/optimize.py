@@ -27,11 +27,12 @@ _INVERTED_COMPARISON = {
 
 
 def optimize(node: php.PhpFile) -> php.PhpFile:
-    node.statements = _optimize_stmts(node.statements)
+    node.statements = _prune_unreferenced_labels(_optimize_stmts(node.statements))
     return node
 
 
 def _optimize_stmts(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    stmts = _drop_redundant_gotos(stmts)
     return [_optimize_stmt(stmt) for stmt in stmts]
 
 
@@ -78,13 +79,13 @@ def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
         if stmt.finally_body is not None:
             stmt.finally_body = _optimize_stmts(stmt.finally_body)
     elif isinstance(stmt, php.FunctionDecl):
-        stmt.body = _drop_trailing_bare_return(_optimize_stmts(stmt.body))
+        stmt.body = _prune_unreferenced_labels(_drop_trailing_bare_return(_optimize_stmts(stmt.body)))
         for param in stmt.params:
             if param.default is not None:
                 param.default = _optimize_expr(param.default)
     elif isinstance(stmt, php.ClassDecl):
         for method in stmt.methods:
-            method.body = _drop_trailing_bare_return(_optimize_stmts(method.body))
+            method.body = _prune_unreferenced_labels(_drop_trailing_bare_return(_optimize_stmts(method.body)))
             for param in method.params:
                 if param.default is not None:
                     param.default = _optimize_expr(param.default)
@@ -217,3 +218,84 @@ def _negate(expr: php.Expr) -> php.Expr:
     if isinstance(expr, php.BinaryOp) and expr.op in _INVERTED_COMPARISON:
         return php.BinaryOp(op=_INVERTED_COMPARISON[expr.op], left=expr.left, right=expr.right)
     return php.UnaryOp(op="!", operand=expr)
+
+
+def _drop_redundant_gotos(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    """Drop `goto label_X;` if execution immediately reaches `label_X:`."""
+    out: list[php.Stmt] = []
+    i = 0
+    n = len(stmts)
+    while i < n:
+        stmt = stmts[i]
+        if isinstance(stmt, php.GotoStmt):
+            j = i + 1
+            while j < n and isinstance(stmts[j], php.OpcodeComment):
+                j += 1
+            if j < n and isinstance(stmts[j], php.LabelStmt) and stmts[j].label == stmt.label:
+                i += 1
+                continue
+        out.append(stmt)
+        i += 1
+    return out
+
+
+def _prune_unreferenced_labels(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    """Remove any `label_X:` that has no corresponding `goto label_X;`."""
+    goto_labels: set[str] = set()
+
+    def scan_gotos(s: php.Stmt) -> None:
+        if isinstance(s, php.GotoStmt):
+            goto_labels.add(s.label)
+        elif isinstance(s, php.IfStmt):
+            for t in s.then:
+                scan_gotos(t)
+            for _, b in s.elifs:
+                for t in b:
+                    scan_gotos(t)
+            for o in s.orelse:
+                scan_gotos(o)
+        elif isinstance(s, (php.WhileStmt, php.DoWhileStmt, php.ForeachStmt)):
+            for b in s.body:
+                scan_gotos(b)
+        elif isinstance(s, php.TryStmt):
+            for b in s.body:
+                scan_gotos(b)
+            for c in s.catches:
+                for b in c.body:
+                    scan_gotos(b)
+            if s.finally_body:
+                for b in s.finally_body:
+                    scan_gotos(b)
+        elif isinstance(s, php.SwitchStmt):
+            for c in s.cases:
+                for b in c.body:
+                    scan_gotos(b)
+
+    for s in stmts:
+        scan_gotos(s)
+
+    def prune(block: list[php.Stmt]) -> list[php.Stmt]:
+        filtered: list[php.Stmt] = []
+        for s in block:
+            if isinstance(s, php.LabelStmt) and s.label not in goto_labels:
+                continue
+            if isinstance(s, php.IfStmt):
+                s.then = prune(s.then)
+                s.elifs = [(c, prune(b)) for c, b in s.elifs]
+                s.orelse = prune(s.orelse)
+            elif isinstance(s, (php.WhileStmt, php.DoWhileStmt, php.ForeachStmt)):
+                s.body = prune(s.body)
+            elif isinstance(s, php.TryStmt):
+                s.body = prune(s.body)
+                for c in s.catches:
+                    c.body = prune(c.body)
+                if s.finally_body:
+                    s.finally_body = prune(s.finally_body)
+            elif isinstance(s, php.SwitchStmt):
+                for c in s.cases:
+                    c.body = prune(c.body)
+            filtered.append(s)
+        return filtered
+
+    return prune(stmts)
+

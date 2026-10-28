@@ -173,7 +173,9 @@ def clean_php_source(raw_php: str) -> str:
                 lbl = m_goto.group(2)
                 target_label = f'label_{lbl}:'
                 j = i + 1
+                has_zend_catch = False
                 if j < n and 'ZEND_CATCH' in lines[j]:
+                    has_zend_catch = True
                     j += 1
                 catch_start = j
                 while j < n and not lines[j].strip().startswith(target_label):
@@ -194,7 +196,7 @@ def clean_php_source(raw_php: str) -> str:
                         else:
                             catch_lines.append(cl)
                     catch_text = "\n".join(catch_lines)
-                    if any(t in catch_text for t in ('$e', '$exception', 'Log::', 'rollBack', 'wipe', 'json', 'abort', 'false', 'getMessage')):
+                    if has_zend_catch or any(t in catch_text for t in ('$e', '$exception', 'Log::', 'rollBack', 'wipe', 'json', 'abort', 'false', 'getMessage')):
                         k = len(out) - 1
                         brace_depth = 0
                         paren_depth = 0
@@ -215,7 +217,7 @@ def clean_php_source(raw_php: str) -> str:
                             k = len(out) - 1
                         try_lines = out[k:]
                         del out[k:]
-                        exc_var = "$e" if "$e" in catch_text or "getMessage" in catch_text else "$exception"
+                        exc_var = "$exception" if "$exception" in catch_text else "$e"
                         out.append(f"{indent}try {{")
                         for tl in try_lines:
                             out.append(f"    {tl}" if tl.strip() else "")
@@ -246,6 +248,28 @@ def clean_php_source(raw_php: str) -> str:
         return "\n".join(out)
 
     raw_php = _clean_duplicate_returns(raw_php)
+
+    # 7. Clean up redundant immediate gotos and unreferenced labels
+    def _clean_redundant_gotos_and_labels(code: str) -> str:
+        # Drop `goto label_X;` immediately preceding `label_X:`
+        code = re.sub(
+            r'^[ \t]*goto\s+(label_\w+);\s*\n(?=[ \t]*\1:)',
+            '',
+            code,
+            flags=re.MULTILINE,
+        )
+        # Drop any label_X: if no goto references it
+        referenced = set(re.findall(r'\bgoto\s+(label_\w+);', code))
+        lines = code.splitlines()
+        filtered = []
+        for line in lines:
+            m_lbl = re.match(r'^[ \t]*(label_\w+):', line)
+            if m_lbl and m_lbl.group(1) not in referenced:
+                continue
+            filtered.append(line)
+        return "\n".join(filtered)
+
+    raw_php = _clean_redundant_gotos_and_labels(raw_php)
 
     # Clean up any leftover stray unstructured catch comments
     raw_php = re.sub(
