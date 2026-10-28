@@ -503,19 +503,29 @@ class RangeDecompiler:
             # reported as a leak.
             self.ctx.temps.pop(iter_key, None)
 
-        done = fetch.fe_fetch_done_opline
+        done = next((t for t in fetch.jump_targets), None)
         if done is None:
-            done = next((t for t in fetch.jump_targets), None)
+            done = fetch.fe_fetch_done_opline
         if done is None:
             done = reset_done
-        if done is None or done <= fetch_index or done > end + 1:
+        loop_back_jumps = [
+            j for j in range(fetch_index + 1, min(len(self.ops), end + 1))
+            if self.ops[j].name == "ZEND_JMP" and fetch_index in self.ops[j].jump_targets
+        ]
+        if (done is None or done <= fetch_index or done > end + 1) and loop_back_jumps:
+            loop_last = max(loop_back_jumps)
+            body_start = fetch_index + 1
+            body_end = loop_last - 1
+            resume = loop_last + 1
+        elif done is None or done <= fetch_index or done > end + 1:
             self.ctx.emit(i, php.OpcodeComment(i, op.name, "cannot locate loop end"))
             return i + 1
-
-        body_start = fetch_index + 1
-        body_end = done - 1
-        if body_end >= body_start and self._jmp_target(body_end) == fetch_index:
-            body_end -= 1
+        else:
+            body_start = fetch_index + 1
+            body_end = done - 1
+            if body_end >= body_start and self._jmp_target(body_end) == fetch_index:
+                body_end -= 1
+            resume = done
 
         value_var: php.Expr
         if fetch.op2.is_cv:
@@ -550,7 +560,6 @@ class RangeDecompiler:
             ),
         )
         # Resume after the loop; skip a trailing FE_FREE.
-        resume = done
         if resume <= end and self.ops[resume].name == "ZEND_FE_FREE":
             resume += 1
         return resume

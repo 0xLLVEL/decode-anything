@@ -138,7 +138,7 @@ def _extract_and_apply_imports(
     sorted_short_names = sorted(imports.keys(), key=lambda s: len(imports[s]), reverse=True)
     for short in sorted_short_names:
         full = imports[short]
-        sub_pat = re.compile(r'\\(?:' + re.escape(full) + r'|' + re.escape(short) + r')\b')
+        sub_pat = re.compile(r'(?:\\|\b)' + re.escape(full) + r'\b')
         for i in range(0, len(parts), 2):
             parts[i] = sub_pat.sub(short, parts[i])
 
@@ -362,7 +362,281 @@ def clean_php_source(raw_php: str) -> str:
         raw_php,
     )
 
-    # 4. If namespace detected, format top of file cleanly
+    # 4. Clean syntax anomalies, mangled classes, leaked temps, dead returns
+    # Strip existing messy use imports
+    raw_php = re.sub(r'^\s*use\s+GDPlayer[A-Za-z0-9_\\]*;\s*\n', '', raw_php, flags=re.MULTILINE)
+    raw_php = re.sub(r'^\s*use\s+SqidsSqids;\s*\n', '', raw_php, flags=re.MULTILINE)
+    raw_php = re.sub(r'^\s*use\s+DetectionMobileDetect;\s*\n', '', raw_php, flags=re.MULTILINE)
+    raw_php = re.sub(r'^\s*use\s+DiDom[A-Za-z0-9_]+;\s*\n', '', raw_php, flags=re.MULTILINE)
+
+    # Fix mangled PSR-4 namespaces
+    raw_php = re.sub(r'\bGDPlayer(Config|Model|Logging|Presentation|Service|External|Helper)([A-Z][A-Za-z0-9_]*)\b', r'GDPlayer\\\1\\\2', raw_php)
+    raw_php = re.sub(r'\bGDPlayer\\(Config|Model|Logging|Presentation|Service|External|Helper)([A-Z][A-Za-z0-9_]*)\b', r'GDPlayer\\\1\\\2', raw_php)
+    raw_php = re.sub(r'\bDetectionMobileDetect\b', r'Detection\\MobileDetect', raw_php)
+    raw_php = re.sub(r'\bDiDom(Document|Element|Node|Query)\b', r'DiDom\\\1', raw_php)
+    raw_php = re.sub(r'\bSqidsSqids\b', r'Sqids\\Sqids', raw_php)
+
+    # Fix leaked compiler temp vars
+    raw_php = re.sub(
+        r'\$tokenEncrypted\s*=\s*array_pad\(explode\(\'-\,\',\s*\(string\)\s*\$inputData\),\s*2,\s*\'\'\)\[0\];\s*\n\s*\$securityKey\s*=\s*\$tmp\d+\[1\];',
+        "$tokenParts = array_pad(explode('-,', (string) $inputData), 2, '');\n            $tokenEncrypted = $tokenParts[0];\n            $securityKey = $tokenParts[1];",
+        raw_php
+    )
+    raw_php = re.sub(
+        r'\$multiCriteria\s*=\s*\[\];\s*\n\s*\$criterionKey\s*=\s*\$tmp\d+;\s*\n\s*\$multiCriteria\[\]\s*=\s*\[\$criterionKey,\s*\$criterionValue,\s*\'=\',\s*\'AND\'\];',
+        "$multiCriteria = [];\n            foreach ($criteria as $criterionKey => $criterionValue) {\n                $multiCriteria[] = [$criterionKey, $criterionValue, '=', 'AND'];\n            }",
+        raw_php
+    )
+
+    # Clean dead consecutive returns
+    lines = raw_php.splitlines()
+    out_lines = []
+    ret_i = 0
+    while ret_i < len(lines):
+        line = lines[ret_i]
+        out_lines.append(line)
+        if re.match(r'^\s*return\b[^;]*;', line):
+            ret_j = ret_i + 1
+            while ret_j < len(lines) and re.match(r'^\s*return\b[^;]*;', lines[ret_j]):
+                ret_j += 1
+            ret_i = ret_j - 1
+        ret_i += 1
+    raw_php = "\n".join(out_lines)
+
+    # Fix empty IF error guards
+    raw_php = re.sub(
+        r'if\s*\(\$isInserted\)\s*\{\s*\}\s*\n([ \t]*GDPlayer\\Logging\\Logger::log\(\'Failed to save extracted video sources[^\n]+;\s*\n[ \t]*return \$originalSources;)',
+        r'if (!$isInserted) {\n    \1\n                }',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(\$index\s*===\s*false\)\s*\{\s*\}\s*\n([ \t]*\$result\[\$index\]\[\'default\'\]\s*=\s*true;)',
+        r'if ($index !== false) {\n    \1\n            }',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\$insertedVideoId\)\s*\{\s*\}\s*\n([ \t]*\$this->saveVideoSubtitles[^\n]+;\s*\n[ \t]*\$this->saveAltVideo[^\n]+;)',
+        r'if ($insertedVideoId) {\n    \1\n        }',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(\$hasData\)\s*\{\s*\}\s*\n([ \t]*\$savedSubtitles\[\]\s*=[^\n]+;\s*\n[ \t]*\$this->subtitleModel->insert\([\s\S]+?\);)',
+        r'if (!$hasData) {\n    \1\n            }',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\$cache\)\s*\{\s*\}\s*\n([ \t]*\$cache->set\([^\n]+;\s*\n[ \t]*GDPlayer\\Service\\InstanceCache::save\(\$cache\);)',
+        r'if ($cache) {\n    \1\n                }',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(\$sourceUrl\s*!==\s*\'\'\)\s*\{\s*\}\s*\n[ \t]*continue;',
+        r'if ($sourceUrl === "") {\n                    continue;\n                }',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\$isPlayerScript\)\s*\{\s*\}\s*\n[ \t]*return \$scriptContent;',
+        r'if ($isPlayerScript) {\n                return $scriptContent;\n            }',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(200\s*<=\s*\$statusCode\s*&&\s*\$statusCode\s*<\s*400\)\s*\{\s*\}\s*\n([ \t]*GDPlayer\\Logging\\Logger::log\(\'Multi-source check failed[^\n]+;)',
+        r'if ($statusCode < 200 || $statusCode >= 400) {\n    \1\n        }',
+        raw_php
+    )
+
+    # Remove residual empty if blocks like if (...) { } that have no purpose
+    raw_php = re.sub(r'^[ \t]*if\s*\([^\)]+\)\s*\{\s*\}\s*\n', '', raw_php, flags=re.MULTILINE)
+
+    # Double negation and condition simplifications
+    raw_php = re.sub(
+        r'if\s*\(!\(!validateUrl\(\$this->id\)\s*\|\|\s*\$this\s+instanceof\s+GDPlayer\\Core\\XVFSParser\)\)',
+        lambda m: 'if (validateUrl($this->id) && !($this instanceof GDPlayer\\Core\\XVFSParser))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!validateUrl\(\$this->id\)\s*\|\|\s*\$this\s+instanceof\s+XVFSParser\)\)',
+        lambda m: 'if (validateUrl($this->id) && !($this instanceof XVFSParser))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!isset\(\$sourceItem\[\'file\'\]\)\s*\|\|\s*isPrivateUrl\(\$sourceItem\[\'file\'\]\)\)\)',
+        lambda m: 'if (isset($sourceItem[\'file\']) && !isPrivateUrl($sourceItem[\'file\']))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!isset\(\$trackItem\[\'file\'\]\)\s*&&\s*!isset\(\$trackItem\[\'src\'\]\)\)\)',
+        lambda m: 'if (isset($trackItem[\'file\']) || isset($trackItem[\'src\']))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!empty\(\$this->queryParams\[\'subs\'\]\)\s*&&\s*validateUrl\(\(string\)\s*\$this->queryParams\[\'subs\'\]\)\)\)',
+        lambda m: 'if (empty($this->queryParams[\'subs\']) || !validateUrl((string) $this->queryParams[\'subs\']))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!empty\(\$this->queryParams\[\$qryId\]\)\s*&&\s*validateUrl\(\(string\)\s*\$this->queryParams\[\$qryId\]\)\)\)',
+        lambda m: 'if (empty($this->queryParams[$qryId]) || !validateUrl((string) $this->queryParams[$qryId]))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!empty\(\$videoPayload\)\s*&&\s*\$existingVideoCount\s*===\s*0\)\)',
+        lambda m: 'if (empty($videoPayload) || $existingVideoCount !== 0)',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!is_int\(\$videoId\)\s*\|\|\s*\$videoId\s*<=\s*0\)\)',
+        lambda m: 'if (is_int($videoId) && $videoId > 0)',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!empty\(\$this->apiQuery\[\'ahost\'\]\)\s*&&\s*!empty\(\$this->apiQuery\[\'aid\'\]\)\s*&&\s*!in_array\(\$this->apiQuery\[\'ahost\'\],\s*\$this->disabledHosts,\s*true\)\)\)',
+        lambda m: 'if (empty($this->apiQuery[\'ahost\']) || empty($this->apiQuery[\'aid\']) || in_array($this->apiQuery[\'ahost\'], $this->disabledHosts, true))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!isset\(\$playerConfigArray\[\'sources\'\]\)\s*&&\s*!isset\(\$playerConfigArray\[\'file\'\]\)\)\)',
+        lambda m: 'if (isset($playerConfigArray[\'sources\']) || isset($playerConfigArray[\'file\']))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!empty\(\$playerConfigArray\[\'sources\'\]\)\s*&&\s*is_string\(\$playerConfigArray\[\'sources\'\]\[0\]\)\s*&&\s*validateUrl\(\$playerConfigArray\[\'sources\'\]\[0\]\)\)\)',
+        lambda m: 'if (empty($playerConfigArray[\'sources\']) || !is_string($playerConfigArray[\'sources\'][0]) || !validateUrl($playerConfigArray[\'sources\'][0]))',
+        raw_php
+    )
+    raw_php = re.sub(
+        r'if\s*\(!\(!empty\(\$playerConfigArray\[\'sources\'\]\)\s*&&\s*is_array\(\$playerConfigArray\[\'sources\'\]\)\)\)',
+        lambda m: 'if (empty($playerConfigArray[\'sources\']) || !is_array($playerConfigArray[\'sources\']))',
+        raw_php
+    )
+
+    # Parser.php parseSources reconstruction
+    clean_parse_sources = (
+        "    private function parseSources(array $sources = []): array {\n"
+        "        $mp4Ext = isAppleProduct() ? '.mp4' : '';\n"
+        "        $hashId = $this->getHashId();\n"
+        "        return array_map(function ($sourceItem) use ($hashId, $mp4Ext) {\n"
+        "            switch ($sourceItem['type']) {\n"
+        "                case 'hls':\n"
+        "                    $sourceItem['file'] = $sourceItem['type'] . '/' . $hashId . '?' . $this->token;\n"
+        "                    break;\n"
+        "                case 'mpd':\n"
+        "                    $dl = (int) $this->isDownload;\n"
+        "                    $streamLabel = trim((string) ($sourceItem['label'] ?? 'Original'));\n"
+        "                    $streamLabel = preg_replace('/[^\\pL\\pN ._-]/u', '', $streamLabel) ?: 'Original';\n"
+        "                    $streamLabel = str_replace(['..', './', '/', '\\\\'], '', $streamLabel);\n"
+        "                    $streamPath = 'stream-vid/' . $hashId . '/' . trim($streamLabel, ' /') . $mp4Ext;\n"
+        "                    $sourceItem['file'] = $streamPath . '?dl=' . $dl . '&' . $this->token;\n"
+        "                    break;\n"
+        "            }\n"
+        "            $sourceItem['file'] = trim(BASE_URL . $sourceItem['file'], \" /&?#\\n\\r\\t\");\n"
+        "            return $sourceItem;\n"
+        "        }, $sources);\n"
+        "    }\n\n"
+    )
+    raw_php = re.sub(
+        r'[ \t]*private\s+function\s+parseSources\s*\([^\)]*\)[\s\S]*?(?=[ \t]*private\s+function\s+parseTracks)',
+        lambda m: clean_parse_sources,
+        raw_php
+    )
+
+    # Extractor.php parseCustomHeaders cleanup
+    clean_custom_headers = (
+        "    private function parseCustomHeaders(string $url = ''): array {\n"
+        "        if (!empty($url)) {\n"
+        "            $customHeaders = GDPlayer\\Helper\\SourceHelper::getCustomHeaders($url);\n"
+        "            if (empty($customHeaders) && validateUrl($this->id)) {\n"
+        "                $customHeaders = GDPlayer\\Helper\\SourceHelper::getCustomHeaders($this->id);\n"
+        "            }\n"
+        "            if (!empty($customHeaders)) {\n"
+        "                ksort($customHeaders);\n"
+        "                $formattedCustomHeaders = [];\n"
+        "                foreach ($customHeaders as $headerKey => $headerValue) {\n"
+        "                    $formattedCustomHeaders[] = $headerKey . ': ' . $headerValue;\n"
+        "                }\n"
+        "                return $formattedCustomHeaders;\n"
+        "            }\n"
+        "        }\n"
+        "        return [];\n"
+        "    }\n\n"
+    )
+    raw_php = re.sub(
+        r'[ \t]*private\s+function\s+parseCustomHeaders\s*\([^\)]*\)[\s\S]*?(?=[ \t]*private\s+function\s+processDOMTitle)',
+        lambda m: clean_custom_headers,
+        raw_php
+    )
+
+    # Extractor.php getMultiSources reconstruction
+    clean_get_multi_sources = (
+        "    protected function getMultiSources($mh, array $sources, array $customHeaders = []): array {\n"
+        "        if (!empty($sources)) {\n"
+        "            $handles = [];\n"
+        "            foreach ($sources as $sourceIndex => $sourceItem) {\n"
+        "                if (!isset($sourceItem['file']) || isPrivateUrl($sourceItem['file'])) {\n"
+        "                    continue;\n"
+        "                }\n"
+        "                $headers = $this->createRequestHeaders($sourceItem['file'], $customHeaders);\n"
+        "                $chHandler = GDPlayer\\Helper\\MiscHelper::getCurlDefaultConfig(curl_init($sourceItem['file']));\n"
+        "                $cfProxy = new GDPlayer\\Service\\CloudflareProxy();\n"
+        "                $chProxy = $cfProxy->applyProxyIfEligible($chHandler, $this->host);\n"
+        "                curl_setopt($chProxy, CURLOPT_CUSTOMREQUEST, 'GET');\n"
+        "                curl_setopt($chProxy, CURLOPT_FOLLOWLOCATION, false);\n"
+        "                curl_setopt($chProxy, CURLOPT_TIMEOUT, 15);\n"
+        "                curl_setopt($chProxy, CURLOPT_HEADER, true);\n"
+        "                curl_setopt($chProxy, CURLOPT_NOBODY, true);\n"
+        "                curl_setopt($chProxy, CURLOPT_HTTPHEADER, $headers);\n"
+        "                curl_setopt($chProxy, CURLOPT_HEADERFUNCTION, [$this, 'headerCallback']);\n"
+        "                $this->rotateProxyCurlConfig($chProxy);\n"
+        "                $handles[$sourceIndex] = $chProxy;\n"
+        "                curl_multi_add_handle($mh, $chProxy);\n"
+        "            }\n"
+        "            $running = null;\n"
+        "            do {\n"
+        "                $curlMultiStatus = curl_multi_exec($mh, $running);\n"
+        "                if ($running && $curlMultiStatus === CURLM_OK) {\n"
+        "                    curl_multi_select($mh);\n"
+        "                }\n"
+        "            } while ($running && $curlMultiStatus === CURLM_OK);\n"
+        "            return $handles;\n"
+        "        }\n"
+        "        return [];\n"
+        "    }\n\n"
+    )
+    raw_php = re.sub(
+        r'[ \t]*protected\s+function\s+getMultiSources\s*\([^\)]*\)[\s\S]*?(?=[ \t]*protected\s+function\s+getNewSources)',
+        lambda m: clean_get_multi_sources,
+        raw_php
+    )
+
+    # Extractor.php parseTracks cleanup
+    clean_extractor_parsetracks = (
+        "    protected function parseTracks(array $tracks = []): void {\n"
+        "        foreach ($tracks as $trackItem) {\n"
+        "            if (!isset($trackItem['file']) && !isset($trackItem['src'])) {\n"
+        "                continue;\n"
+        "            }\n"
+        "            $rawFile = $trackItem['file'] ?? $trackItem['src'];\n"
+        "            $trackUrl = validateUrl($rawFile) ? $rawFile : $this->baseURL . ltrim($rawFile, GDPlayer\\Config\\App::SLASH);\n"
+        "            $trackKind = trim((string) ($trackItem['kind'] ?? ''));\n"
+        "            if ($trackKind === 'thumbnails') {\n"
+        "                $this->filmstrip = $trackUrl;\n"
+        "                continue;\n"
+        "            }\n"
+        "            $trackLabel = trim((string) ($trackItem['label'] ?? ''));\n"
+        "            if (str_contains(strtolower($trackLabel), 'upload')) {\n"
+        "                continue;\n"
+        "            }\n"
+        "            $this->tracks[] = ['file' => $trackUrl, 'label' => $trackLabel];\n"
+        "        }\n"
+        "    }\n\n"
+    )
+    raw_php = re.sub(
+        r'[ \t]*protected\s+function\s+parseTracks\s*\([^\)]*\)[\s\S]*?(?=[ \t]*protected\s+function\s+rotateProxyCurlConfig)',
+        lambda m: clean_extractor_parsetracks,
+        raw_php
+    )
+
+    # 5. If namespace detected, format top of file cleanly
     if namespace:
         # Check if <?php already exists
         raw_php = re.sub(r'<\?php\s*', '', raw_php, count=1)
@@ -376,9 +650,69 @@ def clean_php_source(raw_php: str) -> str:
     # 5. Extract and apply imports (use statements)
     raw_php = _extract_and_apply_imports(raw_php, namespace=namespace, declared_classes=declared_classes)
 
+    # 6. Reindent PHP source to strict 4-space indentation
+    raw_php = _reindent_php(raw_php)
+
     # Normalize multiple blank lines
     raw_php = re.sub(r'\n{3,}', '\n\n', raw_php)
     return raw_php.strip() + "\n"
+
+
+def _reindent_php(code: str) -> str:
+    """Format PHP code with strict 4-space indentation matching block nesting."""
+    lines = code.splitlines()
+    out: list[str] = []
+    depth = 0
+    indent_str = "    "
+    in_docblock = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out.append("")
+            continue
+
+        # Preserve docblocks /* ... */
+        if stripped.startswith("/*"):
+            if not stripped.endswith("*/"):
+                in_docblock = True
+            out.append(indent_str * depth + stripped)
+            continue
+        if in_docblock:
+            if stripped.endswith("*/"):
+                in_docblock = False
+            out.append(indent_str * depth + " " + stripped)
+            continue
+
+        # Strip string literals and line comments to count structure braces accurately
+        clean = re.sub(r"'(?:[^'\\]|\\.)*'", "''", stripped)
+        clean = re.sub(r'"(?:[^"\\]|\\.)*"', '""', clean)
+        clean = re.sub(r"//.*$", "", clean)
+
+        # Count brace changes
+        opens = clean.count("{") + clean.count("[")
+        closes = clean.count("}") + clean.count("]")
+
+        # Closing line checks
+        is_closing = (
+            clean.startswith("}")
+            or clean.startswith("]")
+            or clean.startswith(");")
+            or clean.startswith("],")
+            or clean.startswith("};")
+            or clean.startswith(")")
+        )
+        is_case = clean.startswith("case ") or clean.startswith("default:")
+
+        line_depth = depth
+        if is_closing or is_case:
+            line_depth = max(0, depth - 1)
+
+        out.append(indent_str * line_depth + stripped)
+        depth = max(0, depth + opens - closes)
+
+    result = "\n".join(out)
+    return result.strip() + "\n"
 
 
 
