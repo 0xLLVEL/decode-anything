@@ -177,13 +177,58 @@ def handle_defined(ctx: DecompileContext, op: Opcode) -> None:
 
 
 @opcode_handler("ZEND_DECLARE_CLASS", "ZEND_DECLARE_CLASS_DELAYED",
-                "ZEND_DECLARE_INHERITED_CLASS_DELAYED", "ZEND_DECLARE_FUNCTION",
+                "ZEND_DECLARE_INHERITED_CLASS_DELAYED",
                 "ZEND_DECLARE_CONST", "ZEND_DECLARE_ANON_CLASS")
 def handle_declare(ctx: DecompileContext, op: Opcode) -> None:
     # Declarations are reconstructed from function/class tables, not opcodes.
     if not op.result.is_unused and op.result.temp_key is not None:
         name = op.op1.const_value() if op.op1.is_const else None
         ctx.store(op.result, php.ConstFetch(name=name if isinstance(name, str) else "?"), op)
+
+
+@opcode_handler("ZEND_DECLARE_FUNCTION")
+def handle_declare_function(ctx: DecompileContext, op: Opcode) -> None:
+    oa = _find_declared_function(ctx, op)
+    if oa is None:
+        ctx.warn(f"op {op.index}: function declaration for {op.op1.const_value()} not found in dump")
+        return
+    from ..program import decompile_function  # local import: avoids cycle
+
+    decl, sub_ctx = decompile_function(oa, ctx.program)
+    if oa.function_name:
+        decl.name = oa.function_name
+    ctx.consumed_closures.add(oa.id)
+    ctx.consumed_closures |= sub_ctx.consumed_closures
+    ctx.emit(op.index, decl)
+
+
+def _find_declared_function(ctx: DecompileContext, op: Opcode):
+    if ctx.program is None:
+        return None
+    name = op.op1.const_value()
+    name_str = str(name).lower() if name is not None else None
+
+    candidates = [
+        oa for oa in ctx.program.op_arrays.values()
+        if oa.id not in ctx.consumed_closures and oa.id != ctx.op_array.id
+    ]
+
+    # 1. Match by lowercased function_name, table_key, or hex id
+    if name_str:
+        for oa in candidates:
+            oa_fn = (oa.function_name or "").lower()
+            table_key = str(oa.meta.get("function_table_key") or "").lower()
+            if oa_fn == name_str or table_key == name_str:
+                return oa
+            if oa.id.startswith(f"function:{name_str.encode().hex()}"):
+                return oa
+
+    # 2. Match by index in op2
+    idx = op.op2.constant if op.op2.constant is not None else op.op2.num
+    if idx is not None and 0 <= idx < len(candidates):
+        return candidates[idx]
+
+    return None
 
 
 @opcode_handler("ZEND_DECLARE_LAMBDA_FUNCTION")

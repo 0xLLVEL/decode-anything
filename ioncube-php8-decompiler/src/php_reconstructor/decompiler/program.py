@@ -38,6 +38,8 @@ def decompile_program(program: Program) -> php.PhpFile:
             sequence += 1
 
     for op_array in program.functions():
+        if op_array.id in consumed_closures:
+            continue
         decl, ctx = decompile_function(op_array, program)
         consumed_closures |= ctx.consumed_closures
         ordered.append((_op_array_source_line(op_array), sequence, decl))

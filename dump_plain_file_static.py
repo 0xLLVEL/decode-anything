@@ -58,12 +58,20 @@ def _get_dll_candidates(dll_path: Path | None, php_version: int = 81) -> list[Pa
     return [p for p in candidates if p.exists()]
 
 
+def _infer_dll_version(path: Path, default: int = 81) -> int:
+    m = re.search(r"(\d)\.(\d)", path.name)
+    if m:
+        return int(m.group(1)) * 10 + int(m.group(2))
+    return default
+
+
 def _load_handler_tables(dll_path: Path | None, php_version: int = 81) -> LoaderHandlerTables | None:
     candidates = _get_dll_candidates(dll_path, php_version=php_version)
     for p in candidates:
         if p and p.exists():
+            v = _infer_dll_version(p, default=php_version)
             try:
-                ht = LoaderHandlerTables.from_dll(p, php_version=php_version)
+                ht = LoaderHandlerTables.from_dll(p, php_version=v)
                 print(f"handler tables: {p.name}")
                 return ht
             except Exception as exc:
@@ -169,8 +177,9 @@ def _load_resolver(dll_path: Path | None, php_version: int = 81) -> LoaderIntern
     candidates = _get_dll_candidates(dll_path, php_version=php_version)
     for p in candidates:
         if p and p.exists():
+            v = _infer_dll_version(p, default=php_version)
             try:
-                r = LoaderInternedStringResolver.from_dll(p, php_version=php_version)
+                r = LoaderInternedStringResolver.from_dll(p, php_version=v)
                 print(f"interned-string resolver: {p.name}")
                 return r
             except Exception as exc:

@@ -206,9 +206,15 @@ def _drop_trailing_continue(stmts: list[php.Stmt]) -> list[php.Stmt]:
 
 
 def _drop_trailing_bare_return(stmts: list[php.Stmt]) -> list[php.Stmt]:
-    """The compiler appends an implicit `return null;` to every function."""
-    if stmts and isinstance(stmts[-1], php.ReturnStmt) and stmts[-1].value is None:
-        return stmts[:-1]
+    """The compiler appends an implicit `return null;` or `return;` to functions."""
+    if stmts and isinstance(stmts[-1], php.ReturnStmt):
+        val = stmts[-1].value
+        is_none_val = val is None or (isinstance(val, php.Literal) and val.value is None)
+        if is_none_val:
+            if len(stmts) > 1 and isinstance(stmts[-2], (php.ReturnStmt, php.ThrowStmt)):
+                return stmts[:-1]
+            if val is None:
+                return stmts[:-1]
     return stmts
 
 
