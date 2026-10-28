@@ -223,4 +223,22 @@ def test_fetch_this():
     assert "return $this->prop;" in out
 
 
+def test_match_expression():
+    out = fn([
+        op("ZEND_MATCH", op1=cv(0, "val"), op2=const({"a": 28, "b": 84}), ext=140),
+        op("ZEND_QM_ASSIGN", op1=const(1), result=tmp(96)),
+        op("ZEND_JMP", jump=[7]),
+        op("ZEND_QM_ASSIGN", op1=const(2), result=tmp(96)),
+        op("ZEND_JMP", jump=[7]),
+        op("ZEND_QM_ASSIGN", op1=const(0), result=tmp(96)),
+        op("ZEND_JMP", jump=[7]),
+        op("ZEND_RETURN", op1=tmp(96)),
+    ], cvs=["val"])
+    assert "match ($val)" in out
+    assert "'a' => 1" in out
+    assert "'b' => 2" in out
+    assert "default => 0" in out
+
+
+
 

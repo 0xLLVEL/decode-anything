@@ -218,6 +218,18 @@ class ClosureExpr(Expr):
 
 
 @dataclass
+class MatchArm(Node):
+    conds: list[Expr] | None = None  # None -> default arm
+    body: Expr = field(default_factory=Literal)
+
+
+@dataclass
+class MatchExpr(Expr):
+    subject: Expr = field(default_factory=Variable)
+    arms: list[MatchArm] = field(default_factory=list)
+
+
+@dataclass
 class RawExpr(Expr):
     """Escape hatch: raw PHP snippet (used by fallbacks only)."""
     code: str = ""

@@ -374,6 +374,8 @@ class PhpEmitter:
             return f"exit({self._expr(expr.operand)})", _PREC["atom"]
         if isinstance(expr, php.ClosureExpr):
             return self._closure(expr), _PREC["atom"]
+        if isinstance(expr, php.MatchExpr):
+            return self._match(expr), _PREC["atom"]
         if isinstance(expr, php.RawExpr):
             return expr.code, 0
         return f"/* unsupported expr {type(expr).__name__} */ null", _PREC["atom"]
@@ -430,6 +432,21 @@ class PhpEmitter:
             return signature + " {}"
         close_pad = INDENT * depth
         return signature + " {\n" + "\n".join(body_lines) + "\n" + close_pad + "}"
+
+    def _match(self, expr: php.MatchExpr) -> str:
+        subject = self._expr(expr.subject)
+        arms_rendered = []
+        depth = self._depth + 1
+        pad = INDENT * depth
+        for arm in expr.arms:
+            if arm.conds is None:
+                cond_str = "default"
+            else:
+                cond_str = ", ".join(self._expr(c) for c in arm.conds)
+            val_str = self._expr(arm.body)
+            arms_rendered.append(f"{pad}{cond_str} => {val_str},")
+        close_pad = INDENT * self._depth
+        return "match (" + subject + ") {\n" + "\n".join(arms_rendered) + "\n" + close_pad + "}"
 
     def _literal(self, value: object) -> str:
         if value is None:

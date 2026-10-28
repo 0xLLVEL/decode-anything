@@ -162,6 +162,13 @@ def _optimize_expr(expr: php.Expr) -> php.Expr:
     if isinstance(expr, php.InstanceOf):
         expr.operand = _optimize_expr(expr.operand)
         return expr
+    if isinstance(expr, php.MatchExpr):
+        expr.subject = _optimize_expr(expr.subject)
+        for arm in expr.arms:
+            if arm.conds is not None:
+                arm.conds = [_optimize_expr(c) for c in arm.conds]
+            arm.body = _optimize_expr(arm.body)
+        return expr
     return expr
 
 

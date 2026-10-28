@@ -222,3 +222,79 @@ def handle_recv_init(ctx: DecompileContext, op: Opcode) -> None:
 @opcode_handler("ZEND_RECV_VARIADIC")
 def handle_recv_variadic(ctx: DecompileContext, op: Opcode) -> None:
     return None
+
+
+@opcode_handler("ZEND_MATCH")
+def handle_match(ctx: DecompileContext, op: Opcode) -> int | None:
+    subject = ctx.resolve(op.op1, op)
+    jump_table = op.op2.const_value()
+    if not isinstance(jump_table, dict):
+        ctx.warn(f"op {op.index}: ZEND_MATCH jump table is not a dict")
+        return None
+
+    default_off = op.extended_value
+
+    from typing import Any
+    grouped: dict[int, list[Any] | None] = {}
+    for k, off in jump_table.items():
+        grouped.setdefault(off, []).append(k)
+    if default_off is not None:
+        grouped[default_off] = None
+
+    sorted_offsets = sorted(grouped.keys())
+    if not sorted_offsets:
+        return None
+
+    bytes_per_op = sorted_offsets[0] if sorted_offsets[0] > 0 else 28
+
+    arms: list[php.MatchArm] = []
+    res_key = None
+    end_target = None
+
+    from . import get_handler
+    from ..context import literal_to_expr
+
+    for idx, off in enumerate(sorted_offsets):
+        cond_keys = grouped[off]
+        start = op.index + off // bytes_per_op
+        if idx + 1 < len(sorted_offsets):
+            next_off = sorted_offsets[idx + 1]
+            end = op.index + next_off // bytes_per_op - 1
+        else:
+            end = len(ctx.ops) - 1
+            for j in range(start, len(ctx.ops)):
+                if ctx.ops[j].name == "ZEND_JMP":
+                    end = j
+                    break
+
+        for j in range(start, end):
+            sub_op = ctx.ops[j]
+            h = get_handler(sub_op.name)
+            if h is not None:
+                h(ctx, sub_op)
+            if sub_op.name == "ZEND_QM_ASSIGN" and sub_op.result.temp_key is not None:
+                res_key = sub_op.result.temp_key
+
+        jmp_op = ctx.ops[end]
+        if jmp_op.name == "ZEND_JMP":
+            target = jmp_op.jump_targets[0] if jmp_op.jump_targets else (
+                jmp_op.op1.constant if jmp_op.op1.constant is not None else jmp_op.op1.num
+            )
+            if target is not None:
+                end_target = target
+
+        arm_val = ctx.temps.pop(res_key, None) if res_key is not None else None
+        if arm_val is None:
+            arm_val = php.Literal(None)
+        conds = [literal_to_expr(k) for k in cond_keys] if cond_keys is not None else None
+        arms.append(php.MatchArm(conds=conds, body=arm_val))
+
+    match_expr = php.MatchExpr(subject=subject, arms=arms)
+    if res_key is not None:
+        ctx.temps[res_key] = match_expr
+    if not op.result.is_unused and op.result.temp_key is not None:
+        ctx.temps[op.result.temp_key] = match_expr
+
+    if end_target is not None and end_target > op.index:
+        return end_target - op.index
+    return None
