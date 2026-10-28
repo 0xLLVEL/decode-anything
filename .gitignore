@@ -15,7 +15,7 @@ scratch/
 scratch_*.py
 scratch_*.php
 scratch_*
-spondonit/
+/origin
 temp/
 tmp/
 *.bak
