@@ -44,14 +44,22 @@ from decode_php_body import (
     ParseError,
 )
 
-_DEFAULT_DLL_PATHS = [
-    Path(__file__).resolve().parents[1] / "runtime" / "ext" / "ioncube_loader_win_8.1.dll",
-    Path(__file__).resolve().parent / "ioncube_loader_win_8.1.dll",
-]
+def _get_dll_candidates(dll_path: Path | None, php_version: int = 81) -> list[Path]:
+    if dll_path:
+        return [dll_path]
+    ver_str = f"{php_version // 10}.{php_version % 10}"
+    base = Path(__file__).resolve().parent
+    candidates = [
+        base / f"ioncube_loader_win_{ver_str}.dll",
+        base.parents[1] / "runtime" / "ext" / f"ioncube_loader_win_{ver_str}.dll",
+        base / "ioncube_loader_win_8.1.dll",
+        base.parents[1] / "runtime" / "ext" / "ioncube_loader_win_8.1.dll",
+    ]
+    return [p for p in candidates if p.exists()]
 
 
 def _load_handler_tables(dll_path: Path | None, php_version: int = 81) -> LoaderHandlerTables | None:
-    candidates = [dll_path] if dll_path else (_DEFAULT_DLL_PATHS if php_version == 81 else [])
+    candidates = _get_dll_candidates(dll_path, php_version=php_version)
     for p in candidates:
         if p and p.exists():
             try:
@@ -158,7 +166,7 @@ def _materialize_switch_literals(literals: list[dict], opcodes: list[dict]) -> N
 
 
 def _load_resolver(dll_path: Path | None, php_version: int = 81) -> LoaderInternedStringResolver | None:
-    candidates = [dll_path] if dll_path else (_DEFAULT_DLL_PATHS if php_version == 81 else [])
+    candidates = _get_dll_candidates(dll_path, php_version=php_version)
     for p in candidates:
         if p and p.exists():
             try:
@@ -776,7 +784,7 @@ def _extract_nested_closures(
         except Exception:
             break
 
-        _, state, inner = _decrypt_blob(rec)
+        dec_blob, state, inner = _decrypt_blob(rec)
         if inner is not None:
             if resolver:
                 resolve_interned_literal_strings(inner.literals, resolver)
@@ -814,7 +822,7 @@ def _extract_nested_closures(
             })
 
             _extract_nested_closures(
-                rec.blob, inner, fn_id,
+                dec_blob, inner, fn_id,
                 source_file=source_file,
                 request_key=request_key,
                 serialization_version=serialization_version,
@@ -875,7 +883,7 @@ def dump_file_to_ir(
 
     # ── main record ───────────────────────────────────────────────────────────
     main_rec = extract_dynamic_main_record(body, php_flags=php_flags, offset=0)
-    _, main_state, main_inner = _decrypt_blob(main_rec)
+    dec_main_blob, main_state, main_inner = _decrypt_blob(main_rec)
     if main_inner is not None:
         if resolver:
             resolve_interned_literal_strings(main_inner.literals, resolver)
@@ -919,7 +927,7 @@ def dump_file_to_ir(
             "lines": f"{main_inner.metadata.line_start}..{main_inner.metadata.line_end}",
         })
         _extract_nested_closures(
-            main_rec.blob, main_inner, main_id,
+            dec_main_blob, main_inner, main_id,
             source_file=str(source),
             request_key=request_key,
             serialization_version=sv,
@@ -948,7 +956,7 @@ def dump_file_to_ir(
 
     for name, rec in _parse_function_records(body, php_flags=php_flags,
                                               start_offset=fn_offset, count=fn_count):
-        _, state, inner = _decrypt_blob(rec)
+        dec_fn_blob, state, inner = _decrypt_blob(rec)
 
         if inner is None:
             cipher_type = _detect_dynamic_cipher_type(rec)
@@ -1000,7 +1008,7 @@ def dump_file_to_ir(
               f"lines {inner.metadata.line_start}..{inner.metadata.line_end}")
 
         _extract_nested_closures(
-            rec.blob, inner, fn_id,
+            dec_fn_blob, inner, fn_id,
             source_file=str(source),
             request_key=request_key,
             serialization_version=sv,
@@ -1110,7 +1118,7 @@ def dump_file_to_ir(
 
                 # Successfully parsed a method record.
                 name = rec.table_name or f"<cls{cls_idx}.m{method_idx}@{scan:#x}>"
-                _, state, inner = _decrypt_blob(rec)
+                dec_method_blob, state, inner = _decrypt_blob(rec)
 
                 if inner is None:
                     cipher_type = _detect_dynamic_cipher_type(rec)
@@ -1171,7 +1179,7 @@ def dump_file_to_ir(
                           f"lines {inner.metadata.line_start}..{inner.metadata.line_end}")
 
                     _extract_nested_closures(
-                        rec.blob, inner, fn_id,
+                        dec_method_blob, inner, fn_id,
                         source_file=str(source),
                         request_key=request_key,
                         serialization_version=sv,
