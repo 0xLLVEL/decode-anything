@@ -96,6 +96,7 @@ class ClassConstFetch(Expr):
 class PropertyFetch(Expr):
     target: Expr = field(default_factory=Variable)
     name: Any = ""  # str or Expr for dynamic fetches
+    nullsafe: bool = False
 
 
 @dataclass
@@ -155,6 +156,7 @@ class MethodCall(Expr):
     target: Expr = field(default_factory=Variable)
     name: Any = ""
     args: list[Expr] = field(default_factory=list)
+    nullsafe: bool = False
 
 
 @dataclass

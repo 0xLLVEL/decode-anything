@@ -240,5 +240,25 @@ def test_match_expression():
     assert "default => 0" in out
 
 
+def test_nullsafe_method_call():
+    out = fn([
+        op("ZEND_JMP_NULL", op1=cv(0, "obj"), result=tmp(96), jump=[3]),
+        op("ZEND_INIT_METHOD_CALL", op1=cv(0, "obj"), op2=const("foo")),
+        op("ZEND_DO_FCALL", result=tmp(96)),
+        op("ZEND_RETURN", op1=tmp(96)),
+    ], cvs=["obj"])
+    assert "$obj?->foo()" in out
+
+
+def test_nullsafe_property_fetch():
+    out = fn([
+        op("ZEND_JMP_NULL", op1=cv(0, "obj"), result=tmp(96), jump=[2]),
+        op("ZEND_FETCH_OBJ_R", op1=cv(0, "obj"), op2=const("bar"), result=tmp(96)),
+        op("ZEND_RETURN", op1=tmp(96)),
+    ], cvs=["obj"])
+    assert "$obj?->bar" in out
+
+
+
 
 

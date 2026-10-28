@@ -307,7 +307,8 @@ class PhpEmitter:
             name = expr.name if isinstance(expr.name, str) and is_valid_php_identifier(expr.name) \
                 else "{" + self._expr(expr.name) + "}" if isinstance(expr.name, php.Expr) \
                 else "{" + self._literal(expr.name) + "}"
-            return f"{target}->{name}", _PREC["postfix"]
+            arrow = "?->" if getattr(expr, "nullsafe", False) else "->"
+            return f"{target}{arrow}{name}", _PREC["postfix"]
         if isinstance(expr, php.StaticPropertyFetch):
             return f"{expr.class_name}::${expr.name}", _PREC["postfix"]
         if isinstance(expr, php.DimFetch):
@@ -341,7 +342,8 @@ class PhpEmitter:
             target = self._expr(expr.target, _PREC["postfix"])
             name = expr.name if isinstance(expr.name, str) and is_valid_php_identifier(expr.name) \
                 else "{" + (self._expr(expr.name) if isinstance(expr.name, php.Expr) else self._literal(expr.name)) + "}"
-            return f"{target}->{name}({self._args(expr.args)})", _PREC["postfix"]
+            arrow = "?->" if getattr(expr, "nullsafe", False) else "->"
+            return f"{target}{arrow}{name}({self._args(expr.args)})", _PREC["postfix"]
         if isinstance(expr, php.StaticCall):
             cls = expr.class_name if isinstance(expr.class_name, str) else self._expr(expr.class_name, _PREC["postfix"])
             name = expr.name if isinstance(expr.name, str) else "{" + self._expr(expr.name) + "}"

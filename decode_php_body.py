@@ -53,7 +53,6 @@ OP2_JUMP_OPCODES = {
     0x97,
     0x98,
     0xA9,
-    0xC6,
 }
 EXTENDED_JUMP_OPCODES = {
     0x2D,  # JMPZNZ second branch
@@ -2039,7 +2038,7 @@ def _apply_jump_targets(opline: DecodedOpcode, opcode_count: int) -> None:
         )
         opline.op1.jump_target = terminal_if_lazy_self_target(target, "op1")
 
-    if opline.opcode in (0x4D, 0x7D):  # FE_RESET_R / FE_RESET_RW
+    if opline.opcode in (0x4D, 0x7D, 0xC6):  # FE_RESET_R / FE_RESET_RW / ZEND_JMP_NULL
         opline.op2.jump_target = _validate_target(
             opline.op2.serialized_value,
             opcode_count,

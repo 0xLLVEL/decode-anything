@@ -88,6 +88,8 @@ class RangeDecompiler:
             return self._short_circuit(i, end, op)
         if name in ("ZEND_JMP_SET", "ZEND_COALESCE"):
             return self._jmp_set(i, end, op)
+        if name == "ZEND_JMP_NULL":
+            return self._jmp_null(i, end, op)
         if name in ("ZEND_SWITCH_STRING", "ZEND_SWITCH_LONG") or (
             name in ("ZEND_CASE", "ZEND_CASE_STRICT") and self._starts_case_chain(i, end)
         ):
@@ -406,6 +408,35 @@ class RangeDecompiler:
         else:
             self.ctx.temps[result_key] = php.Ternary(cond=left, if_true=None, if_false=right)
         return target
+
+    def _jmp_null(self, i: int, end: int, op: Opcode) -> int:
+        target = op.jump_targets[0] if op.jump_targets else (
+            op.op2.constant if op.op2.constant is not None else None
+        )
+        if target is not None and target < len(self.ops) and self.ops[target].name in (
+            "ZEND_DO_FCALL", "ZEND_DO_FCALL_BY_NAME", "ZEND_DO_ICALL", "ZEND_DO_UCALL"
+        ):
+            end_target = target + 1
+        elif target is not None:
+            end_target = target
+        else:
+            end_target = i + 1
+
+        result_key = op.result.temp_key
+        if end_target <= i or end_target > len(self.ops):
+            self.ctx.emit(i, php.OpcodeComment(i, op.name, "unsupported shape"))
+            return i + 1
+
+        self.ctx.push_sink()
+        self.decompile_range(i + 1, end_target - 1)
+        for stmt in self.ctx.pop_sink():
+            self.ctx.current_sink().append((i, stmt))
+
+        if result_key is not None:
+            expr = self.ctx.temps.get(result_key)
+            if isinstance(expr, (php.MethodCall, php.PropertyFetch)):
+                expr.nullsafe = True
+        return end_target
 
     # -- foreach ----------------------------------------------------------------
 

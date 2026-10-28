@@ -111,6 +111,7 @@ CONDITIONAL_JUMPS = {
     "ZEND_SWITCH_LONG",
     "ZEND_SWITCH_STRING",
     "ZEND_MATCH",
+    "ZEND_JMP_NULL",
 }
 
 # fn_flags bits (zend_compile.h) -- only the ones we render.
