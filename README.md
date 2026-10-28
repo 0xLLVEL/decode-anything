@@ -167,27 +167,34 @@ All 85+ test cases pass:
 
 ## 🗺️ Roadmap
 
-`Decode-Anything` aims to live up to its name as a unified, multi-ecosystem reverse-engineering and deobfuscation suite. Future development milestones include:
+`Decode-Anything` aims to be the definitive reverse-engineering and deobfuscation suite for protected PHP applications. Future development milestones focusing exclusively on the PHP ecosystem include:
 
 ### 1. 🛡️ SourceGuardian (ixed) Decoder
 - [ ] Envelope decryption and payload extraction for SourceGuardian PHP 7.x & 8.x (`sg11` / `sg14`).
 - [ ] Static Zend bytecode disassembler and custom opcode translation table mapping.
 - [ ] Control-flow restructuring and de-virtualization of protected user functions.
-- [ ] Full integration into the existing AST reconstructor pipeline.
+- [ ] Direct integration into the unified AST reconstructor pipeline.
 
-### 2. ⚡ Advanced JavaScript Deobfuscator Engine
-- [ ] **javascript-obfuscator (obfuscator.io)**:
-  - String array extraction, rotation undoing, and proxy function inlining.
-  - Control Flow Flattening (CFF) state machine unflattening via control-flow graph (CFG) analysis.
-  - Dead code injection removal and opaque predicate evaluation.
-- [ ] **Enterprise & Web Obfuscators**:
-  - Unpacking patterns for JScrambler and common commercial JS packers.
-  - JS VM-based de-virtualization for custom interpreter stubs.
-  - Bundle unpacker and scope regenerator for Webpack, Vite, and Rollup minified distributions.
+### 2. 🔒 Zend Guard Decompiler
+- [ ] Support for legacy and enterprise Zend Guard protected archives (`Zend\x00` format).
+- [ ] Extraction of compiled Zend VM bytecode instructions.
+- [ ] Symbol reconstruction and variable name recovery.
 
-### 3. 🧩 Unified Engine & Plugin System
-- [ ] Single CLI (`decode-anything <file>`) with automatic magic-byte and format detection.
-- [ ] Web UI / Interactive playground for side-by-side deobfuscation inspection.
+### 3. ⚡ PHP Bolt Decryptor
+- [ ] Extraction of encrypted bytecode wrappers (`bolt_encrypt` / `boltr_`).
+- [ ] Static decryption key extraction from loader binary and configuration.
+- [ ] Restoration of native PHP source files from decrypted payloads.
+
+### 4. 🌀 Yakpro-Po & AST Obfuscator De-flattener
+- [ ] Scrambled identifier normalization (mapping random variable/function names to clean, semantic labels).
+- [ ] Control Flow Flattening (CFF) unflattening via control-flow graph (CFG) normalization.
+- [ ] Automated unpacking of nested `eval(base64_decode(...))` and `eval(gzinflate(...))` layers.
+- [ ] Dead code injection and opaque predicate stripping.
+
+### 5. 🧩 Unified Multi-Format CLI Engine
+- [ ] Auto-detection pipeline: automatically detect encoder type and route to the corresponding decryptor.
+- [ ] Side-by-side terminal / HTML inspection view for original vs reconstructed code.
+
 
 ---
 
