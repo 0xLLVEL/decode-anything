@@ -279,6 +279,13 @@ def clean_php_source(raw_php: str) -> str:
         raw_php,
     )
 
+    # Clean up any generator / reconstruction banner comments
+    raw_php = re.sub(
+        r'/\*\s*\n\s*\*\s*(?:Reconstructed by|decoded by)[\s\S]*?\*/\s*',
+        '',
+        raw_php,
+    )
+
     # 4. If namespace detected, format top of file cleanly
     if namespace:
         # Check if <?php already exists
