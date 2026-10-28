@@ -198,6 +198,9 @@ def clean_php_source(raw_php: str) -> str:
     raw_php = re.sub(r'\b(?:self|parent)::\?\(\);', 'parent::__construct();', raw_php)
     raw_php = re.sub(r'\(\$\{None\}\)', '$_SERVER', raw_php)
     raw_php = re.sub(r'\$\{None\}', '$_SERVER', raw_php)
+    raw_php = re.sub(r'!\s*!', '', raw_php)
+    raw_php = re.sub(r'^[ \t]*do\s*\{\s*\}\s*while\s*\([^\n]+\);\s*\n?', '', raw_php, flags=re.MULTILINE)
+    raw_php = re.sub(r'^[ \t]*while\s*\([^\n]+\)\s*\{\s*\}\s*\n?', '', raw_php, flags=re.MULTILINE)
     raw_php = re.sub(r'\[null\s*=>\s*(\$[A-Za-z0-9_]+)\]', r"['key' => \1]", raw_php)
 
     # 4. Restore match statement in convertToInt if present
@@ -347,6 +350,10 @@ def clean_php_source(raw_php: str) -> str:
         '',
         raw_php,
     )
+
+    # Clean up any leftover raw opcode comments
+    raw_php = re.sub(r'^[ \t]*/\*\s*\[opcode\s+\d+\][^\n]*\*/\s*\n?', '', raw_php, flags=re.MULTILINE)
+    raw_php = re.sub(r'/\*\s*\[opcode\s+\d+\][^\n]*\*/', '', raw_php)
 
     # Clean up any generator / reconstruction banner comments
     raw_php = re.sub(

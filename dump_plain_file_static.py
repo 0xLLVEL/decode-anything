@@ -165,6 +165,151 @@ def _detect_handler_variant(
     return best_variant
 
 
+def deobfuscate_cfg(op_entry: dict) -> dict:
+    """Linearize permuted/scrambled basic blocks in IonCube op_arrays into clean topological CFG."""
+    ops = op_entry.get("opcodes") or []
+    n = len(ops)
+    if n <= 2:
+        return op_entry
+
+    leaders = {0}
+    for i, o in enumerate(ops):
+        nm = o.get("opcode_name", "")
+        for t in (o.get("jump_targets") or []):
+            if 0 <= t < n:
+                leaders.add(t)
+        if nm in ("ZEND_JMP", "ZEND_JMPZ", "ZEND_JMPNZ", "ZEND_RETURN", "ZEND_THROW", "ZEND_EXIT"):
+            if i + 1 < n:
+                leaders.add(i + 1)
+
+    sorted_leaders = sorted(leaders)
+    blocks = {}
+    for idx, start in enumerate(sorted_leaders):
+        end = (sorted_leaders[idx + 1] - 1) if idx + 1 < len(sorted_leaders) else (n - 1)
+        last_op = ops[end]
+        last_nm = last_op.get("opcode_name", "")
+        succs = []
+        if last_nm == "ZEND_JMP":
+            succs = list(last_op.get("jump_targets") or [])
+        elif last_nm in ("ZEND_JMPZ", "ZEND_JMPNZ"):
+            jt = list(last_op.get("jump_targets") or [])
+            succs = jt + ([end + 1] if end + 1 < n else [])
+        elif last_nm in ("ZEND_RETURN", "ZEND_THROW", "ZEND_EXIT"):
+            succs = []
+        else:
+            succs = [end + 1] if end + 1 < n else []
+
+        is_trampoline = (start == end and last_nm == "ZEND_JMP")
+        blocks[start] = {
+            "start": start, "end": end, "succs": succs,
+            "last": last_nm, "is_trampoline": is_trampoline,
+        }
+
+    def resolve_target(t):
+        visited = set()
+        curr = t
+        while curr in blocks and blocks[curr]["is_trampoline"]:
+            if curr in visited:
+                break
+            visited.add(curr)
+            succs = blocks[curr]["succs"]
+            if not succs:
+                break
+            curr = succs[0]
+        return curr
+
+    # Detect conditional branch pairs
+    # If a block ends in ZEND_JMPZ/NZ, and the very next block is a single ZEND_JMP trampoline
+    cond_branches = {}
+    for b_start, b in blocks.items():
+        if b["last"] in ("ZEND_JMPZ", "ZEND_JMPNZ"):
+            t_jump = resolve_target(b["succs"][0])
+            fall_b = b["end"] + 1
+            if fall_b in blocks and blocks[fall_b]["is_trampoline"]:
+                t_fall = resolve_target(blocks[fall_b]["succs"][0])
+                # For ZEND_JMPZ:
+                # fallthrough is taken when condition is TRUE -> then_block
+                # jump is taken when condition is FALSE -> else/cont block
+                if b["last"] == "ZEND_JMPZ":
+                    then_b = t_fall
+                    else_b = t_jump
+                else:  # ZEND_JMPNZ
+                    then_b = t_jump
+                    else_b = t_fall
+                cond_branches[b_start] = {
+                    "then_b": then_b,
+                    "else_b": else_b,
+                    "trampoline_b": fall_b,
+                }
+
+    visited = set()
+    order = []
+
+    def schedule_block(b_start):
+        b_start = resolve_target(b_start)
+        if b_start in visited or b_start not in blocks:
+            return
+        visited.add(b_start)
+        order.append(b_start)
+        b = blocks[b_start]
+
+        if b_start in cond_branches:
+            info = cond_branches[b_start]
+            schedule_block(info["then_b"])
+            schedule_block(info["else_b"])
+        else:
+            for s in b["succs"]:
+                schedule_block(s)
+
+    schedule_block(0)
+    for b_start in sorted(blocks.keys()):
+        if b_start not in visited and not blocks[b_start]["is_trampoline"]:
+            schedule_block(b_start)
+
+    import copy
+    new_ops = []
+    old_to_new_start = {}
+
+    for b_idx, b_start in enumerate(order):
+        b = blocks[b_start]
+        old_to_new_start[b_start] = len(new_ops)
+        b_ops = ops[b["start"]:b["end"] + 1]
+
+        next_b_start = order[b_idx + 1] if b_idx + 1 < len(order) else None
+
+        for op_idx_in_b, op_in_block in enumerate(b_ops):
+            op_copy = copy.deepcopy(op_in_block)
+            is_last = (op_idx_in_b == len(b_ops) - 1)
+
+            if is_last and b_start in cond_branches:
+                info = cond_branches[b_start]
+                # In standard Zend, ZEND_JMPZ jumps to else_b when false, falls through to then_b
+                # We placed then_b immediately after b_start, so the jump target is else_b!
+                op_copy["jump_targets"] = [info["else_b"]]
+            elif is_last and op_copy.get("opcode_name") == "ZEND_JMP":
+                resolved_dst = resolve_target(op_copy.get("jump_targets", [None])[0])
+                if resolved_dst == next_b_start:
+                    continue
+
+            new_ops.append(op_copy)
+
+    for i, o in enumerate(new_ops):
+        if o.get("jump_targets"):
+            new_jts = []
+            for t in o["jump_targets"]:
+                resolved_t = resolve_target(t)
+                if resolved_t in old_to_new_start:
+                    new_jts.append(old_to_new_start[resolved_t])
+                else:
+                    new_jts.append(t)
+            o["jump_targets"] = new_jts
+        o["index"] = i
+
+    res = copy.deepcopy(op_entry)
+    res["opcodes"] = new_ops
+    return res
+
+
 def _parse_try_catch_records(raw_bytes: bytes) -> list[dict]:
     """Parse raw 16-byte try/catch records: [try_op, catch_op, finally_op, finally_end].
 
@@ -1372,6 +1517,8 @@ def dump_file_to_ir(
     fails = sum(1 for m in report_methods if m.get("state") == "failed")
 
     resolve_function_calls(op_arrays)
+    for k in list(op_arrays.keys()):
+        op_arrays[k] = deobfuscate_cfg(op_arrays[k])
 
     icdump = {
         "format": "icdump-ir-v1",

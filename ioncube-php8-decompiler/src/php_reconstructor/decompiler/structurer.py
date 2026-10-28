@@ -135,6 +135,14 @@ class RangeDecompiler:
             return i + 1
 
         if target <= i:
+            target_op_name = self.ops[target].name
+            if target_op_name in ("ZEND_RETURN", "ZEND_VERIFY_RETURN_TYPE", "ZEND_EXIT", "ZEND_THROW"):
+                ret_body = self.decompile_into(target, min(target + 1, len(self.ops) - 1))
+                ret_body = [s for s in ret_body if isinstance(s, (php.ReturnStmt, php.ExitExpr, php.ThrowStmt))]
+                if ret_body:
+                    body_cond = cond if jump_when_true else php.UnaryOp(op="!", operand=cond)
+                    self.ctx.emit(i, php.IfStmt(cond=body_cond, then=ret_body))
+                    return i + 1
             # Back edge: do { ... } while (cond);
             return self._do_while(i, op, cond, jump_when_true, target)
 
@@ -245,7 +253,8 @@ class RangeDecompiler:
         body: list[php.Stmt] = []
         while sink and sink[-1][0] >= target:
             body.insert(0, sink.pop()[1])
-        self.ctx.emit(i, php.DoWhileStmt(body=body, cond=loop_cond))
+        if body:
+            self.ctx.emit(i, php.DoWhileStmt(body=body, cond=loop_cond))
         return i + 1
 
     def _loop_exit_stmt(self, target: int) -> php.Stmt | None:
@@ -276,6 +285,13 @@ class RangeDecompiler:
             self._emit_goto(i, op, target)
             return i + 1
         if target <= i:
+            target_op_name = self.ops[target].name
+            if target_op_name in ("ZEND_RETURN", "ZEND_VERIFY_RETURN_TYPE", "ZEND_EXIT", "ZEND_THROW"):
+                ret_body = self.decompile_into(target, min(target + 1, len(self.ops) - 1))
+                ret_body = [s for s in ret_body if isinstance(s, (php.ReturnStmt, php.ExitExpr, php.ThrowStmt))]
+                if ret_body:
+                    self.ctx.emit(i, ret_body[0])
+                    return i + 1
             # Check if any outside instruction jumps into [target, i].
             # If so, wrapping in while(true) causes fatal PHP error:
             # "'goto' into loop or switch statement is disallowed"
@@ -291,7 +307,25 @@ class RangeDecompiler:
                 body: list[php.Stmt] = []
                 while sink and sink[-1][0] >= target:
                     body.insert(0, sink.pop()[1])
-                self.ctx.emit(i, php.WhileStmt(cond=php.Literal(True), body=body))
+                if body:
+                    # A genuine while(true) loop body must contain an exit condition (break, return, throw, exit).
+                    def _contains_exit(stmts):
+                        for s in stmts:
+                            if isinstance(s, (php.BreakStmt, php.ReturnStmt, php.ThrowStmt)):
+                                return True
+                            if isinstance(s, php.ExprStmt) and isinstance(s.expr, php.ExitExpr):
+                                return True
+                            if isinstance(s, php.IfStmt):
+                                if _contains_exit(s.then) or _contains_exit(s.orelse or []):
+                                    return True
+                        return False
+
+                    if _contains_exit(body):
+                        self.ctx.emit(i, php.WhileStmt(cond=php.Literal(True), body=body))
+                    else:
+                        # Spurious backward jump: restore body linearly into sink
+                        for s in body:
+                            self.ctx.current_sink().append((target, s))
                 return i + 1
             self._emit_goto(i, op, target)
             return i + 1

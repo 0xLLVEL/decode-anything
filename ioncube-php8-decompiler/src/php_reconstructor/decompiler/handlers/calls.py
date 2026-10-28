@@ -117,6 +117,20 @@ def handle_do_fcall(ctx: DecompileContext, op: Opcode) -> None:
         ctx.store(op.result, expr, op)
 
 
+@opcode_handler("ZEND_CALLABLE_CONVERT")
+def handle_callable_convert(ctx: DecompileContext, op: Opcode) -> None:
+    if not ctx.call_stack:
+        ctx.warn(f"op {op.index}: {op.name} without INIT frame")
+        return
+    frame = ctx.call_stack.pop()
+    frame.args = [php.RawExpr("...")]
+    expr = _build_call(frame)
+    if op.result.is_unused:
+        ctx.emit(op.index, php.ExprStmt(expr))
+    else:
+        ctx.store(op.result, expr, op)
+
+
 def _build_call(frame: CallFrame) -> php.Expr:
     if frame.kind == "new":
         return php.New(class_name=frame.class_name, args=frame.args)
