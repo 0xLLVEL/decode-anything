@@ -71,6 +71,243 @@ LARAVEL_FACADES = {
     "Arr": "Illuminate\\Support\\Arr",
 }
 
+VENDOR_PSR4_MAP = {
+    "DiDom": ["Document", "Element", "Node", "Query", "ClassList", "Style", "Encoder", "Errors"],
+    "Detection": ["MobileDetect"],
+    "Sqids": ["Sqids", "SqidsOptions", "SqidsBlocklist"],
+    "Illuminate": ["Support", "Database", "Routing", "Http", "Contracts"],
+    "Symfony": ["Component", "Contracts"],
+}
+
+
+def _invert_condition(cond: str) -> str:
+    """Invert a boolean expression cleanly according to logic rules."""
+    cond = cond.strip()
+    if cond.startswith("!") and not cond.startswith("!="):
+        inner = cond[1:].strip()
+        if inner.startswith("(") and inner.endswith(")"):
+            depth = 0
+            is_wrapped = True
+            for c in inner[:-1]:
+                if c == '(': depth += 1
+                elif c == ')': depth -= 1
+                if depth == 0:
+                    is_wrapped = False
+                    break
+            if is_wrapped:
+                return inner[1:-1].strip()
+        return inner
+
+    comparisons = [
+        (" === ", " !== "),
+        (" !== ", " === "),
+        (" == ", " != "),
+        (" != ", " == "),
+        (" >= ", " < "),
+        (" <= ", " > "),
+        (" > ", " <= "),
+        (" < ", " >= "),
+    ]
+    for op, inv_op in comparisons:
+        if op in cond:
+            parts = cond.split(op, 1)
+            return f"{parts[0].strip()}{inv_op}{parts[1].strip()}"
+
+    m_range = re.match(r'(\d+)\s*<=\s*(\$[A-Za-z0-9_]+)\s*&&\s*\2\s*<\s*(\d+)', cond)
+    if m_range:
+        low, var, high = m_range.group(1), m_range.group(2), m_range.group(3)
+        return f"{var} < {low} || {var} >= {high}"
+
+    if " " in cond or "||" in cond or "&&" in cond:
+        return f"!({cond})"
+    return f"!{cond}"
+
+
+def _simplify_boolean_expressions(code: str) -> str:
+    """Algebraically simplify double negations like !(!A || B) or !(!A && !B)."""
+    code = re.sub(r'!\s*!\s*', '', code)
+    def repl_dm(m):
+        full = m.group(0)
+        prefix = m.group(1)
+        inner = m.group(2)
+        m_or = re.match(r'^!\s*([a-zA-Z0-9_\$->:()\[\]\'"]+)\s*\|\|\s*(.+)$', inner)
+        if m_or:
+            a = m_or.group(1).strip()
+            b = m_or.group(2).strip()
+            return f"{prefix}{a} && {_invert_condition(b)}"
+        m_and_both = re.match(r'^!\s*([a-zA-Z0-9_\$->:()\[\]\'"]+)\s*&&\s*!\s*(.+)$', inner)
+        if m_and_both:
+            a = m_and_both.group(1).strip()
+            b = m_and_both.group(2).strip()
+            return f"{prefix}{a} || {b}"
+        m_and = re.match(r'^!\s*([a-zA-Z0-9_\$->:()\[\]\'"]+)\s*&&\s*(.+)$', inner)
+        if m_and:
+            a = m_and.group(1).strip()
+            b = m_and.group(2).strip()
+            return f"{prefix}{a} || {_invert_condition(b)}"
+        return full
+
+    code = re.sub(r'\b(if\s*\(|while\s*\()!\s*\(([^()]+(?:\([^()]*\)[^()]*)*)\)', repl_dm, code)
+    return code
+
+
+def _invert_empty_if_guards(code: str) -> str:
+    """Universally invert empty if guards followed by loop/return/throw statements."""
+    lines = code.splitlines()
+    out = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        m_empty_single = re.match(r'^([ \t]*)if\s*\((.+)\)\s*\{\s*\}\s*$', line)
+        m_empty_open = re.match(r'^([ \t]*)if\s*\((.+)\)\s*\{\s*$', line)
+        
+        indent = None
+        cond = None
+        next_i = i + 1
+
+        if m_empty_single:
+            indent = m_empty_single.group(1)
+            cond = m_empty_single.group(2)
+        elif m_empty_open and i + 1 < n and re.match(r'^[ \t]*\}\s*$', lines[i + 1]):
+            indent = m_empty_open.group(1)
+            cond = m_empty_open.group(2)
+            next_i = i + 2
+
+        if indent is not None and cond is not None:
+            if next_i < n:
+                followed_line = lines[next_i]
+                f_strip = followed_line.strip()
+                is_terminal = (
+                    f_strip.startswith(('continue;', 'break;', 'return ', 'return;', 'throw '))
+                )
+                if is_terminal and followed_line.startswith(indent):
+                    inv_cond = _invert_condition(cond)
+                    inner_indent = indent + "    "
+                    out.append(f"{indent}if ({inv_cond}) {{")
+                    out.append(f"{inner_indent}{f_strip}")
+                    out.append(f"{indent}}}")
+                    i = next_i + 1
+                    continue
+                if next_i + 1 < n:
+                    next2 = lines[next_i + 1]
+                    f2_strip = next2.strip()
+                    if (f2_strip.startswith(('return', 'continue;', 'break;', 'exit;')) 
+                            and followed_line.startswith(indent) and next2.startswith(indent)):
+                        inv_cond = _invert_condition(cond)
+                        inner_indent = indent + "    "
+                        out.append(f"{indent}if ({inv_cond}) {{")
+                        out.append(f"{inner_indent}{f_strip}")
+                        out.append(f"{inner_indent}{f2_strip}")
+                        out.append(f"{indent}}}")
+                        i = next_i + 2
+                        continue
+
+        out.append(line)
+        i += 1
+    
+    # Remove any remaining empty if blocks
+    res = "\n".join(out)
+    res = re.sub(r'^[ \t]*if\s*\([^\)]+\)\s*\{\s*\}\s*\n', '', res, flags=re.MULTILINE)
+    return res
+
+
+def _resolve_synthetic_returns(code: str) -> str:
+    """Universally fix invalid synthetic `return null;` based on function return type hints."""
+    lines = code.splitlines()
+    out = []
+    current_ret_type = None
+    is_constructor = False
+
+    for line in lines:
+        stripped = line.strip()
+        m_fn = re.search(r'function\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*(?::\s*([^\s{]+))?', stripped)
+        if m_fn:
+            fn_name = m_fn.group(1)
+            current_ret_type = m_fn.group(2)
+            is_constructor = fn_name == '__construct'
+
+        if stripped == 'return null;':
+            indent = line[:len(line) - len(line.lstrip())]
+            if is_constructor:
+                out.append(f"{indent}return;")
+                continue
+            if current_ret_type:
+                if current_ret_type.startswith('?'):
+                    out.append(line)
+                    continue
+                if current_ret_type == 'array':
+                    out.append(f"{indent}return [];")
+                    continue
+                elif current_ret_type == 'string':
+                    out.append(f"{indent}return '';")
+                    continue
+                elif current_ret_type == 'bool':
+                    out.append(f"{indent}return false;")
+                    continue
+                elif current_ret_type in ('int', 'float'):
+                    out.append(f"{indent}return 0;")
+                    continue
+                elif current_ret_type == 'void':
+                    out.append(f"{indent}return;")
+                    continue
+
+        out.append(line)
+    return "\n".join(out)
+
+
+def _normalize_psr4_namespaces(code: str, namespace: str | None = None) -> str:
+    """Universally normalize PascalCase concatenated namespaces for vendor and project classes."""
+    for vendor, classes in VENDOR_PSR4_MAP.items():
+        for cls in classes:
+            target = f"{vendor}\\{cls}"
+            code = re.sub(r'\b' + vendor + cls + r'\b', lambda m, t=target: t, code)
+            code = re.sub(r'\b' + vendor + r'\\\\?' + cls + r'\b', lambda m, t=target: t, code)
+
+    if namespace:
+        root_ns = namespace.split('\\')[0]
+        def repl_project_ns(m):
+            matched = m.group(0)
+            parts = re.findall(r'[A-Z][a-z0-9_]*', matched)
+            if len(parts) >= 2:
+                return '\\'.join(parts)
+            return matched
+
+        code = re.sub(r'\b' + re.escape(root_ns) + r'[A-Z][A-Za-z0-9_]+\b', repl_project_ns, code)
+
+    return code
+
+
+def _resolve_leaked_temps(code: str) -> str:
+    """Universally resolve leaked compiler temps from multi-index expressions or loops."""
+    def repl_multi_index(m):
+        indent = m.group(1)
+        var1 = m.group(2)
+        expr = m.group(3)
+        var2 = m.group(4)
+        base_name = var1.lstrip('$') + 'Parts'
+        return (
+            f"{indent}${base_name} = {expr};\n"
+            f"{indent}{var1} = ${base_name}[0];\n"
+            f"{indent}{var2} = ${base_name}[1];"
+        )
+
+    code = re.sub(
+        r'^([ \t]*)(\$[A-Za-z0-9_]+)\s*=\s*(.*?\[\d+\])\[0\];\s*\n[ \t]*(\$[A-Za-z0-9_]+)\s*=\s*\$tmp\d+\[1\];',
+        repl_multi_index,
+        code,
+        flags=re.MULTILINE
+    )
+    code = re.sub(
+        r'^([ \t]*)(\$[A-Za-z0-9_]+)\s*=\s*([a-zA-Z0-9_\$->:()\[\]\'",\s]+)\[0\];\s*\n[ \t]*(\$[A-Za-z0-9_]+)\s*=\s*\$tmp\d+\[1\];',
+        repl_multi_index,
+        code,
+        flags=re.MULTILINE
+    )
+    code = re.sub(r'(\$[A-Za-z0-9_]+)\s*=\s*\$tmp\d+;', r'// \1 temp resolved', code)
+    code = re.sub(r'\$tmp\d+', '$tempVal', code)
+    return code
+
 
 def _extract_and_apply_imports(
     php_code: str,
@@ -194,34 +431,13 @@ def clean_php_source(raw_php: str) -> str:
     raw_php = re.sub(r"null\s*\.\s*(['\"]/[^'\"]+['\"])", r"__DIR__ . \1", raw_php)
 
     # 3. Fix unresolved method/constructor/variable names
-    raw_php = re.sub(r'->\{null\}\(\)', '->flush()', raw_php)
     raw_php = re.sub(r'\b(?:self|parent)::\?\(\);', 'parent::__construct();', raw_php)
     raw_php = re.sub(r'\(\$\{None\}\)', '$_SERVER', raw_php)
     raw_php = re.sub(r'\$\{None\}', '$_SERVER', raw_php)
     raw_php = re.sub(r'!\s*!', '', raw_php)
     raw_php = re.sub(r'^[ \t]*do\s*\{\s*\}\s*while\s*\([^\n]+\);\s*\n?', '', raw_php, flags=re.MULTILINE)
     raw_php = re.sub(r'^[ \t]*while\s*\([^\n]+\)\s*\{\s*\}\s*\n?', '', raw_php, flags=re.MULTILINE)
-    raw_php = re.sub(r'\[null\s*=>\s*(\$[A-Za-z0-9_]+)\]', r"['key' => \1]", raw_php)
-
-    # 4. Restore match statement in convertToInt if present
-    match_pattern = re.compile(
-        r'/\*\s*\[opcode\s+\d+\]\s*ZEND_MATCH[^\n]*\*/\s*'
-        r'goto\s+label_(\d+);\s*'
-        r'goto\s+label_\1;\s*'
-        r'goto\s+label_\1;\s*'
-        r'label_\1:\s*'
-        r'return\s+\$numericSize;',
-        re.MULTILINE,
-    )
-    match_replacement = (
-        "return match ($metric) {\n"
-        "            'K' => $numericSize * 1024,\n"
-        "            'M' => $numericSize * 1048576,\n"
-        "            'G' => $numericSize * 1073741824,\n"
-        "            default => $numericSize,\n"
-        "        };"
-    )
-    raw_php = match_pattern.sub(match_replacement, raw_php)
+    raw_php = re.sub(r'\[null\s*=>\s*(\$[A-Za-z0-9_]+)\]', r"[\1]", raw_php)
 
     # 5. Handle try/catch structures line-by-line
     def _clean_try_catches(code: str) -> str:
@@ -362,33 +578,14 @@ def clean_php_source(raw_php: str) -> str:
         raw_php,
     )
 
-    # 4. Clean syntax anomalies, mangled classes, leaked temps, dead returns
-    # Strip existing messy use imports
-    raw_php = re.sub(r'^\s*use\s+GDPlayer[A-Za-z0-9_\\]*;\s*\n', '', raw_php, flags=re.MULTILINE)
-    raw_php = re.sub(r'^\s*use\s+SqidsSqids;\s*\n', '', raw_php, flags=re.MULTILINE)
-    raw_php = re.sub(r'^\s*use\s+DetectionMobileDetect;\s*\n', '', raw_php, flags=re.MULTILINE)
-    raw_php = re.sub(r'^\s*use\s+DiDom[A-Za-z0-9_]+;\s*\n', '', raw_php, flags=re.MULTILINE)
+    # 4. Universal syntax and AST anomaly resolutions
+    # 4a. Normalize PascalCase concatenated vendor and project namespaces
+    raw_php = _normalize_psr4_namespaces(raw_php, namespace=namespace)
 
-    # Fix mangled PSR-4 namespaces
-    raw_php = re.sub(r'\bGDPlayer(Config|Model|Logging|Presentation|Service|External|Helper)([A-Z][A-Za-z0-9_]*)\b', r'GDPlayer\\\1\\\2', raw_php)
-    raw_php = re.sub(r'\bGDPlayer\\(Config|Model|Logging|Presentation|Service|External|Helper)([A-Z][A-Za-z0-9_]*)\b', r'GDPlayer\\\1\\\2', raw_php)
-    raw_php = re.sub(r'\bDetectionMobileDetect\b', r'Detection\\MobileDetect', raw_php)
-    raw_php = re.sub(r'\bDiDom(Document|Element|Node|Query)\b', r'DiDom\\\1', raw_php)
-    raw_php = re.sub(r'\bSqidsSqids\b', r'Sqids\\Sqids', raw_php)
+    # 4b. Resolve leaked compiler temporary variables ($tmpN)
+    raw_php = _resolve_leaked_temps(raw_php)
 
-    # Fix leaked compiler temp vars
-    raw_php = re.sub(
-        r'\$tokenEncrypted\s*=\s*array_pad\(explode\(\'-\,\',\s*\(string\)\s*\$inputData\),\s*2,\s*\'\'\)\[0\];\s*\n\s*\$securityKey\s*=\s*\$tmp\d+\[1\];',
-        "$tokenParts = array_pad(explode('-,', (string) $inputData), 2, '');\n            $tokenEncrypted = $tokenParts[0];\n            $securityKey = $tokenParts[1];",
-        raw_php
-    )
-    raw_php = re.sub(
-        r'\$multiCriteria\s*=\s*\[\];\s*\n\s*\$criterionKey\s*=\s*\$tmp\d+;\s*\n\s*\$multiCriteria\[\]\s*=\s*\[\$criterionKey,\s*\$criterionValue,\s*\'=\',\s*\'AND\'\];',
-        "$multiCriteria = [];\n            foreach ($criteria as $criterionKey => $criterionValue) {\n                $multiCriteria[] = [$criterionKey, $criterionValue, '=', 'AND'];\n            }",
-        raw_php
-    )
-
-    # Clean dead consecutive returns
+    # 4c. Clean dead consecutive returns
     lines = raw_php.splitlines()
     out_lines = []
     ret_i = 0
@@ -403,238 +600,14 @@ def clean_php_source(raw_php: str) -> str:
         ret_i += 1
     raw_php = "\n".join(out_lines)
 
-    # Fix empty IF error guards
-    raw_php = re.sub(
-        r'if\s*\(\$isInserted\)\s*\{\s*\}\s*\n([ \t]*GDPlayer\\Logging\\Logger::log\(\'Failed to save extracted video sources[^\n]+;\s*\n[ \t]*return \$originalSources;)',
-        r'if (!$isInserted) {\n    \1\n                }',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(\$index\s*===\s*false\)\s*\{\s*\}\s*\n([ \t]*\$result\[\$index\]\[\'default\'\]\s*=\s*true;)',
-        r'if ($index !== false) {\n    \1\n            }',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\$insertedVideoId\)\s*\{\s*\}\s*\n([ \t]*\$this->saveVideoSubtitles[^\n]+;\s*\n[ \t]*\$this->saveAltVideo[^\n]+;)',
-        r'if ($insertedVideoId) {\n    \1\n        }',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(\$hasData\)\s*\{\s*\}\s*\n([ \t]*\$savedSubtitles\[\]\s*=[^\n]+;\s*\n[ \t]*\$this->subtitleModel->insert\([\s\S]+?\);)',
-        r'if (!$hasData) {\n    \1\n            }',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\$cache\)\s*\{\s*\}\s*\n([ \t]*\$cache->set\([^\n]+;\s*\n[ \t]*GDPlayer\\Service\\InstanceCache::save\(\$cache\);)',
-        r'if ($cache) {\n    \1\n                }',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(\$sourceUrl\s*!==\s*\'\'\)\s*\{\s*\}\s*\n[ \t]*continue;',
-        r'if ($sourceUrl === "") {\n                    continue;\n                }',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\$isPlayerScript\)\s*\{\s*\}\s*\n[ \t]*return \$scriptContent;',
-        r'if ($isPlayerScript) {\n                return $scriptContent;\n            }',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(200\s*<=\s*\$statusCode\s*&&\s*\$statusCode\s*<\s*400\)\s*\{\s*\}\s*\n([ \t]*GDPlayer\\Logging\\Logger::log\(\'Multi-source check failed[^\n]+;)',
-        r'if ($statusCode < 200 || $statusCode >= 400) {\n    \1\n        }',
-        raw_php
-    )
+    # 4d. Universally invert empty IF error guards
+    raw_php = _invert_empty_if_guards(raw_php)
 
-    # Remove residual empty if blocks like if (...) { } that have no purpose
-    raw_php = re.sub(r'^[ \t]*if\s*\([^\)]+\)\s*\{\s*\}\s*\n', '', raw_php, flags=re.MULTILINE)
+    # 4e. Universally simplify double negations and De Morgan boolean expressions
+    raw_php = _simplify_boolean_expressions(raw_php)
 
-    # Double negation and condition simplifications
-    raw_php = re.sub(
-        r'if\s*\(!\(!validateUrl\(\$this->id\)\s*\|\|\s*\$this\s+instanceof\s+GDPlayer\\Core\\XVFSParser\)\)',
-        lambda m: 'if (validateUrl($this->id) && !($this instanceof GDPlayer\\Core\\XVFSParser))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!validateUrl\(\$this->id\)\s*\|\|\s*\$this\s+instanceof\s+XVFSParser\)\)',
-        lambda m: 'if (validateUrl($this->id) && !($this instanceof XVFSParser))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!isset\(\$sourceItem\[\'file\'\]\)\s*\|\|\s*isPrivateUrl\(\$sourceItem\[\'file\'\]\)\)\)',
-        lambda m: 'if (isset($sourceItem[\'file\']) && !isPrivateUrl($sourceItem[\'file\']))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!isset\(\$trackItem\[\'file\'\]\)\s*&&\s*!isset\(\$trackItem\[\'src\'\]\)\)\)',
-        lambda m: 'if (isset($trackItem[\'file\']) || isset($trackItem[\'src\']))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!empty\(\$this->queryParams\[\'subs\'\]\)\s*&&\s*validateUrl\(\(string\)\s*\$this->queryParams\[\'subs\'\]\)\)\)',
-        lambda m: 'if (empty($this->queryParams[\'subs\']) || !validateUrl((string) $this->queryParams[\'subs\']))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!empty\(\$this->queryParams\[\$qryId\]\)\s*&&\s*validateUrl\(\(string\)\s*\$this->queryParams\[\$qryId\]\)\)\)',
-        lambda m: 'if (empty($this->queryParams[$qryId]) || !validateUrl((string) $this->queryParams[$qryId]))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!empty\(\$videoPayload\)\s*&&\s*\$existingVideoCount\s*===\s*0\)\)',
-        lambda m: 'if (empty($videoPayload) || $existingVideoCount !== 0)',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!is_int\(\$videoId\)\s*\|\|\s*\$videoId\s*<=\s*0\)\)',
-        lambda m: 'if (is_int($videoId) && $videoId > 0)',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!empty\(\$this->apiQuery\[\'ahost\'\]\)\s*&&\s*!empty\(\$this->apiQuery\[\'aid\'\]\)\s*&&\s*!in_array\(\$this->apiQuery\[\'ahost\'\],\s*\$this->disabledHosts,\s*true\)\)\)',
-        lambda m: 'if (empty($this->apiQuery[\'ahost\']) || empty($this->apiQuery[\'aid\']) || in_array($this->apiQuery[\'ahost\'], $this->disabledHosts, true))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!isset\(\$playerConfigArray\[\'sources\'\]\)\s*&&\s*!isset\(\$playerConfigArray\[\'file\'\]\)\)\)',
-        lambda m: 'if (isset($playerConfigArray[\'sources\']) || isset($playerConfigArray[\'file\']))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!empty\(\$playerConfigArray\[\'sources\'\]\)\s*&&\s*is_string\(\$playerConfigArray\[\'sources\'\]\[0\]\)\s*&&\s*validateUrl\(\$playerConfigArray\[\'sources\'\]\[0\]\)\)\)',
-        lambda m: 'if (empty($playerConfigArray[\'sources\']) || !is_string($playerConfigArray[\'sources\'][0]) || !validateUrl($playerConfigArray[\'sources\'][0]))',
-        raw_php
-    )
-    raw_php = re.sub(
-        r'if\s*\(!\(!empty\(\$playerConfigArray\[\'sources\'\]\)\s*&&\s*is_array\(\$playerConfigArray\[\'sources\'\]\)\)\)',
-        lambda m: 'if (empty($playerConfigArray[\'sources\']) || !is_array($playerConfigArray[\'sources\']))',
-        raw_php
-    )
-
-    # Parser.php parseSources reconstruction
-    clean_parse_sources = (
-        "    private function parseSources(array $sources = []): array {\n"
-        "        $mp4Ext = isAppleProduct() ? '.mp4' : '';\n"
-        "        $hashId = $this->getHashId();\n"
-        "        return array_map(function ($sourceItem) use ($hashId, $mp4Ext) {\n"
-        "            switch ($sourceItem['type']) {\n"
-        "                case 'hls':\n"
-        "                    $sourceItem['file'] = $sourceItem['type'] . '/' . $hashId . '?' . $this->token;\n"
-        "                    break;\n"
-        "                case 'mpd':\n"
-        "                    $dl = (int) $this->isDownload;\n"
-        "                    $streamLabel = trim((string) ($sourceItem['label'] ?? 'Original'));\n"
-        "                    $streamLabel = preg_replace('/[^\\pL\\pN ._-]/u', '', $streamLabel) ?: 'Original';\n"
-        "                    $streamLabel = str_replace(['..', './', '/', '\\\\'], '', $streamLabel);\n"
-        "                    $streamPath = 'stream-vid/' . $hashId . '/' . trim($streamLabel, ' /') . $mp4Ext;\n"
-        "                    $sourceItem['file'] = $streamPath . '?dl=' . $dl . '&' . $this->token;\n"
-        "                    break;\n"
-        "            }\n"
-        "            $sourceItem['file'] = trim(BASE_URL . $sourceItem['file'], \" /&?#\\n\\r\\t\");\n"
-        "            return $sourceItem;\n"
-        "        }, $sources);\n"
-        "    }\n\n"
-    )
-    raw_php = re.sub(
-        r'[ \t]*private\s+function\s+parseSources\s*\([^\)]*\)[\s\S]*?(?=[ \t]*private\s+function\s+parseTracks)',
-        lambda m: clean_parse_sources,
-        raw_php
-    )
-
-    # Extractor.php parseCustomHeaders cleanup
-    clean_custom_headers = (
-        "    private function parseCustomHeaders(string $url = ''): array {\n"
-        "        if (!empty($url)) {\n"
-        "            $customHeaders = GDPlayer\\Helper\\SourceHelper::getCustomHeaders($url);\n"
-        "            if (empty($customHeaders) && validateUrl($this->id)) {\n"
-        "                $customHeaders = GDPlayer\\Helper\\SourceHelper::getCustomHeaders($this->id);\n"
-        "            }\n"
-        "            if (!empty($customHeaders)) {\n"
-        "                ksort($customHeaders);\n"
-        "                $formattedCustomHeaders = [];\n"
-        "                foreach ($customHeaders as $headerKey => $headerValue) {\n"
-        "                    $formattedCustomHeaders[] = $headerKey . ': ' . $headerValue;\n"
-        "                }\n"
-        "                return $formattedCustomHeaders;\n"
-        "            }\n"
-        "        }\n"
-        "        return [];\n"
-        "    }\n\n"
-    )
-    raw_php = re.sub(
-        r'[ \t]*private\s+function\s+parseCustomHeaders\s*\([^\)]*\)[\s\S]*?(?=[ \t]*private\s+function\s+processDOMTitle)',
-        lambda m: clean_custom_headers,
-        raw_php
-    )
-
-    # Extractor.php getMultiSources reconstruction
-    clean_get_multi_sources = (
-        "    protected function getMultiSources($mh, array $sources, array $customHeaders = []): array {\n"
-        "        if (!empty($sources)) {\n"
-        "            $handles = [];\n"
-        "            foreach ($sources as $sourceIndex => $sourceItem) {\n"
-        "                if (!isset($sourceItem['file']) || isPrivateUrl($sourceItem['file'])) {\n"
-        "                    continue;\n"
-        "                }\n"
-        "                $headers = $this->createRequestHeaders($sourceItem['file'], $customHeaders);\n"
-        "                $chHandler = GDPlayer\\Helper\\MiscHelper::getCurlDefaultConfig(curl_init($sourceItem['file']));\n"
-        "                $cfProxy = new GDPlayer\\Service\\CloudflareProxy();\n"
-        "                $chProxy = $cfProxy->applyProxyIfEligible($chHandler, $this->host);\n"
-        "                curl_setopt($chProxy, CURLOPT_CUSTOMREQUEST, 'GET');\n"
-        "                curl_setopt($chProxy, CURLOPT_FOLLOWLOCATION, false);\n"
-        "                curl_setopt($chProxy, CURLOPT_TIMEOUT, 15);\n"
-        "                curl_setopt($chProxy, CURLOPT_HEADER, true);\n"
-        "                curl_setopt($chProxy, CURLOPT_NOBODY, true);\n"
-        "                curl_setopt($chProxy, CURLOPT_HTTPHEADER, $headers);\n"
-        "                curl_setopt($chProxy, CURLOPT_HEADERFUNCTION, [$this, 'headerCallback']);\n"
-        "                $this->rotateProxyCurlConfig($chProxy);\n"
-        "                $handles[$sourceIndex] = $chProxy;\n"
-        "                curl_multi_add_handle($mh, $chProxy);\n"
-        "            }\n"
-        "            $running = null;\n"
-        "            do {\n"
-        "                $curlMultiStatus = curl_multi_exec($mh, $running);\n"
-        "                if ($running && $curlMultiStatus === CURLM_OK) {\n"
-        "                    curl_multi_select($mh);\n"
-        "                }\n"
-        "            } while ($running && $curlMultiStatus === CURLM_OK);\n"
-        "            return $handles;\n"
-        "        }\n"
-        "        return [];\n"
-        "    }\n\n"
-    )
-    raw_php = re.sub(
-        r'[ \t]*protected\s+function\s+getMultiSources\s*\([^\)]*\)[\s\S]*?(?=[ \t]*protected\s+function\s+getNewSources)',
-        lambda m: clean_get_multi_sources,
-        raw_php
-    )
-
-    # Extractor.php parseTracks cleanup
-    clean_extractor_parsetracks = (
-        "    protected function parseTracks(array $tracks = []): void {\n"
-        "        foreach ($tracks as $trackItem) {\n"
-        "            if (!isset($trackItem['file']) && !isset($trackItem['src'])) {\n"
-        "                continue;\n"
-        "            }\n"
-        "            $rawFile = $trackItem['file'] ?? $trackItem['src'];\n"
-        "            $trackUrl = validateUrl($rawFile) ? $rawFile : $this->baseURL . ltrim($rawFile, GDPlayer\\Config\\App::SLASH);\n"
-        "            $trackKind = trim((string) ($trackItem['kind'] ?? ''));\n"
-        "            if ($trackKind === 'thumbnails') {\n"
-        "                $this->filmstrip = $trackUrl;\n"
-        "                continue;\n"
-        "            }\n"
-        "            $trackLabel = trim((string) ($trackItem['label'] ?? ''));\n"
-        "            if (str_contains(strtolower($trackLabel), 'upload')) {\n"
-        "                continue;\n"
-        "            }\n"
-        "            $this->tracks[] = ['file' => $trackUrl, 'label' => $trackLabel];\n"
-        "        }\n"
-        "    }\n\n"
-    )
-    raw_php = re.sub(
-        r'[ \t]*protected\s+function\s+parseTracks\s*\([^\)]*\)[\s\S]*?(?=[ \t]*protected\s+function\s+rotateProxyCurlConfig)',
-        lambda m: clean_extractor_parsetracks,
-        raw_php
-    )
+    # 4f. Universally resolve synthetic returns based on return type hints
+    raw_php = _resolve_synthetic_returns(raw_php)
 
     # 5. If namespace detected, format top of file cleanly
     if namespace:
