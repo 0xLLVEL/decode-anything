@@ -75,6 +75,8 @@ def _load_handler_tables(dll_path: Path | None, php_version: int = 81) -> Loader
                 ht = LoaderHandlerTables.from_dll(p, php_version=v)
                 ht.source_path = p
                 ht.loaded_php_version = v
+                # Static opcode streams never use runtime observer handlers (ZEND_OBSERVER_NOT_OBSERVED = -1)
+                ht.global_feature_word = 0xFFFFFFFF
                 print(f"handler tables: {p.name}")
                 return ht
             except Exception as exc:
@@ -92,10 +94,11 @@ def _detect_descriptor_delta(
     serialization_version: int,
     php_flags: int,
 ) -> int:
-    """Detect whether opcode stream delta is 2 or 4 (dual-loader bundles use 4)."""
+    """Detect whether opcode stream delta is 0, 2, 4, 6, or 8."""
     VALID_TERMINALS = {62, 111, 149, 161}
-    scores = {2: 0, 4: 0}
-    for delta in (2, 4):
+    candidate_deltas = (2, 4, 6, 0, 8)
+    scores = {d: 0 for d in candidate_deltas}
+    for delta in candidate_deltas:
         for rec, inner in sample_records:
             if inner is None or inner.block.opcode_count < 1:
                 continue
@@ -112,7 +115,7 @@ def _detect_descriptor_delta(
                     scores[delta] += 1
             except Exception:
                 pass
-    best = 4 if scores[4] > scores[2] else 2
+    best = max(scores, key=lambda d: scores[d])
     print(f"opcode stream descriptor delta: {best}  (scores: {scores})")
     return best
 
@@ -121,6 +124,7 @@ def _detect_handler_variant(
     handler_tables: LoaderHandlerTables,
     decoded,
     xor_stream=None,
+    preferred_variant: int = 0,
 ) -> int:
     """Try all 7 handler variants; return the one with fewest ambiguous decodes (ties: most ok)."""
     def u32(v: int) -> int:
@@ -133,11 +137,14 @@ def _detect_handler_variant(
     else:
         samples = [(decoded, xor_stream)]
 
-    best_variant = 0
+    best_variant = preferred_variant
     best_ambig = 10 ** 9
     best_ok = -1
 
-    for variant in range(len(handler_tables.VARIANT_TABLES)):
+    candidates = [preferred_variant] + [
+        v for v in range(len(handler_tables.VARIANT_TABLES)) if v != preferred_variant
+    ]
+    for variant in candidates:
         ok = 0
         ambig = 0
         for sample_dec, sample_xor in samples:
@@ -299,9 +306,9 @@ def deobfuscate_cfg(op_entry: dict) -> dict:
     n = len(ops)
     if n <= 2:
         return op_entry
-    if any(o.get("opcode_name") == "ZEND_MATCH" for o in ops):
-        # Match arm offsets are byte distances into the original op array.
-        # Reordering or dead-code removal invalidates them.
+    if any(o.get("opcode_name") in ("ZEND_MATCH", "ZEND_SWITCH_STRING", "ZEND_SWITCH_LONG") for o in ops):
+        # Match arm and switch jump-table offsets are byte distances into the original op array.
+        # Reordering or dead-code removal invalidates them and scatters switch cases.
         return op_entry
 
     leaders = {0}
@@ -485,7 +492,14 @@ def deobfuscate_cfg(op_entry: dict) -> dict:
         if b["last"] in ("ZEND_JMPZ", "ZEND_JMPNZ"):
             t_jump = resolve_target(b["succs"][0])
             fall_b = b["end"] + 1
-            if fall_b in blocks and blocks[fall_b]["is_trampoline"]:
+            if (
+                fall_b in blocks
+                and blocks[fall_b]["is_trampoline"]
+                and not (
+                    blocks[fall_b]["succs"]
+                    and blocks[fall_b]["succs"][0] in dom.get(fall_b, ())
+                )
+            ):
                 t_fall = resolve_target(blocks[fall_b]["succs"][0])
                 if b["last"] == "ZEND_JMPZ":
                     then_b = t_fall
@@ -1549,7 +1563,10 @@ def dump_file_to_ir(
             except Exception:
                 pass
         if decoded_samples:
-            handler_variant = _detect_handler_variant(handler_tables, decoded_samples)
+            pref = 6 if (target_php_version >= 84 or descriptor_delta == 6) else 0
+            handler_variant = _detect_handler_variant(
+                handler_tables, decoded_samples, preferred_variant=pref
+            )
 
     if main_inner is not None:
         if resolver:

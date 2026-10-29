@@ -142,7 +142,16 @@ class RangeDecompiler:
                 if ret_body:
                     body_cond = cond if jump_when_true else php.UnaryOp(op="!", operand=cond)
                     self.ctx.emit(i, php.IfStmt(cond=body_cond, then=ret_body))
+            if target_op_name in ("ZEND_FE_FETCH_R", "ZEND_FE_FETCH_RW", "ZEND_FE_RESET_R", "ZEND_FE_RESET_RW"):
+                loop_stmt = self._loop_exit_stmt(target)
+                if loop_stmt is not None:
+                    body_cond = cond if jump_when_true else php.UnaryOp(op="!", operand=cond)
+                    self.ctx.emit(i, php.IfStmt(cond=body_cond, then=[loop_stmt]))
                     return i + 1
+                goto_cond = cond if jump_when_true else php.UnaryOp(op="!", operand=cond)
+                self.ctx.goto_targets.add(target)
+                self.ctx.emit(i, php.IfStmt(cond=goto_cond, then=[php.GotoStmt(label=f"label_{target}")]))
+                return i + 1
             # Back edge: do { ... } while (cond);
             return self._do_while(i, op, cond, jump_when_true, target)
 

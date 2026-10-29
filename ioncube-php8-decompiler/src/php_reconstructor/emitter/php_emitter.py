@@ -268,9 +268,22 @@ class PhpEmitter:
         return f": {'?' if nullable else ''}{return_type}"
 
     def _doc_comment(self, doc: str | None, pad: str) -> list[str]:
-        if not doc:
+        if not doc or not isinstance(doc, str):
             return []
-        return [f"{pad}{line}" for line in doc.splitlines()]
+        start_idx = doc.find("/**")
+        if start_idx == -1:
+            return []
+        doc = doc[start_idx:]
+        if "*/" not in doc:
+            doc = doc.rstrip() + "\n */"
+        else:
+            end_idx = doc.rfind("*/") + 2
+            doc = doc[:end_idx]
+        lines = []
+        for line in doc.splitlines():
+            cleaned_line = "".join(c for c in line if c in "\t\r\n" or 32 <= ord(c) < 127 or ord(c) > 127)
+            lines.append(f"{pad}{cleaned_line}")
+        return lines
 
     # -- expressions ------------------------------------------------------------
 
