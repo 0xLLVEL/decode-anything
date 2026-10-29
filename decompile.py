@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # Add decompiler src to Python module path
@@ -914,6 +916,20 @@ def is_ioncube_file(path: Path) -> bool:
         return False
 
 
+def is_sourceguardian_file(path: Path) -> bool:
+    """Check if a file contains the SourceGuardian wrapper/marker."""
+    try:
+        content = path.read_bytes()[:2048]
+        return b"sg_load" in content or b"__SG_EXT__" in content or content.startswith(b"SG")
+    except Exception:
+        return False
+
+
+def is_encoded_file(path: Path) -> bool:
+    """Check if a file is IonCube or SourceGuardian encoded."""
+    return is_ioncube_file(path) or is_sourceguardian_file(path)
+
+
 def validate_php_syntax(php_file: Path) -> tuple[bool, str]:
     """Validate PHP syntax using `php -l`."""
     try:
@@ -1160,13 +1176,18 @@ def decompile_file(
     if not silent_header:
         print(f"\n[*] Decompiling: {input_path.name}")
     try:
-        icdump, _, header_report = dump_file_to_ir(
-            input_path,
-            php_version=php_version,
-            loader_dll=loader_dll,
-            save_files=False,
-        )
-        decompile_status = icdump.get("summary", {}).get("decompile_status", {})
+        if is_sourceguardian_file(input_path):
+            from sg_bytecode_ir import decode_sg_file_to_ir
+            icdump = decode_sg_file_to_ir(input_path)
+            decompile_status = {"status": "ok", "encoder": "SourceGuardian"}
+        else:
+            icdump, _, header_report = dump_file_to_ir(
+                input_path,
+                php_version=php_version,
+                loader_dll=loader_dll,
+                save_files=False,
+            )
+            decompile_status = icdump.get("summary", {}).get("decompile_status", {})
 
         prog = parse_dump(icdump)
         php_ast = decompile_program(prog)
@@ -1264,14 +1285,14 @@ def main() -> int:
         print_scan_report(report, as_json=args.json)
 
         if args.decompile and report.encoded_count > 0:
-            ioncube_items = [f for f in report.encoded_files if f.match.name == "ionCube"]
-            if ioncube_items:
+            target_items = [f for f in report.encoded_files if f.match.name in ("ionCube", "SourceGuardian")]
+            if target_items:
                 decompile_failures = 0
                 validation_failures = 0
-                print(f"\n[*] Starting auto-decompilation of {len(ioncube_items)} ionCube file(s)...")
-                for idx, f_info in enumerate(ioncube_items, 1):
+                print(f"\n[*] Starting auto-decompilation of {len(target_items)} encoded file(s)...")
+                for idx, f_info in enumerate(target_items, 1):
                     out_f = (args.output / f_info.relative_path) if args.output else f_info.path.with_name(f"{f_info.path.stem}.reconstructed.php")
-                    print(f"[{idx}/{len(ioncube_items)}] Decompiling: {f_info.relative_path} ... ", end="", flush=True)
+                    print(f"[{idx}/{len(target_items)}] Decompiling: {f_info.relative_path} ... ", end="", flush=True)
                     ok, syn_ok, err, status = decompile_file(
                         f_info.path,
                         output_path=out_f,
@@ -1352,15 +1373,15 @@ def main() -> int:
 
     # 1. Scan directory
     all_files = [f for f in input_path.rglob("*") if f.is_file()]
-    ioncube_files = [f for f in all_files if f.suffix == ".php" and is_ioncube_file(f)]
-    other_files = [f for f in all_files if f not in ioncube_files]
+    protected_files = [f for f in all_files if f.suffix == ".php" and is_encoded_file(f)]
+    other_files = [f for f in all_files if f not in protected_files]
 
     print(f"Found {len(all_files)} total file(s):")
-    print(f"  - {len(ioncube_files)} IonCube-protected PHP file(s)")
+    print(f"  - {len(protected_files)} protected PHP file(s) (ionCube / SourceGuardian)")
     print(f"  - {len(other_files)} non-protected / asset file(s)")
 
-    if not ioncube_files:
-        print(f"\nNo IonCube-protected PHP files detected in: {input_path}")
+    if not protected_files:
+        print(f"\nNo protected PHP files detected in: {input_path}")
         return 0
 
     # 2. Copy other files if output directory specified
@@ -1375,14 +1396,14 @@ def main() -> int:
             copied_count += 1
         print(f"    -> Copied {copied_count} file(s).")
 
-    # 3. Decompile IonCube files
-    print(f"\n[*] Starting batch decompilation of {len(ioncube_files)} file(s)...\n")
+    # 3. Decompile protected files
+    print(f"\n[*] Starting batch decompilation of {len(protected_files)} file(s)...\n")
     start_time = time.time()
     results = []
 
-    for idx, f in enumerate(ioncube_files, 1):
+    for idx, f in enumerate(protected_files, 1):
         rel = f.relative_to(input_path)
-        pct = (idx / len(ioncube_files)) * 100
+        pct = (idx / len(protected_files)) * 100
 
         if args.output:
             out_file = args.output / rel
@@ -1435,8 +1456,8 @@ def main() -> int:
     print("\n" + "=" * 60)
     print("  BATCH DECOMPILATION SUMMARY")
     print("=" * 60)
-    print(f"  Total IonCube files  : {len(ioncube_files)}")
-    print(f"  Successfully decoded : {success_count} / {len(ioncube_files)}")
+    print(f"  Total protected files: {len(protected_files)}")
+    print(f"  Successfully decoded : {success_count} / {len(protected_files)}")
     print(f"  Validation Valid     : {validation_pass_count} / {success_count}")
     print(f"  Partial decodes      : {len(partial_items)}")
     if args.output and not args.no_copy_other:

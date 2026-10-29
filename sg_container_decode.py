@@ -519,19 +519,29 @@ def describe_body(body: bytes) -> tuple[int, int]:
     return version, flags
 
 
-def decode_file(path: Path, keys: tuple[bytes, ...], out_dir: Path) -> dict:
+def decode_file(
+    path: Path | str,
+    keys: tuple[bytes, ...] | None = None,
+    out_dir: Path | None = None,
+) -> dict:
+    if keys is None:
+        keys = load_keys()
+    path = Path(path)
     result = decode_bytes(get_payload(path), keys)
     result["containers"] = [describe_body(body) for body in result["bodies"]]
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{path.stem}.meta.bin").write_bytes(result["metadata"])
-    bodies = result["bodies"]
-    if len(bodies) == 1:
-        targets = [out_dir / f"{path.stem}.body.bin"]
-    else:
-        targets = [out_dir / f"{path.stem}.body.{index}.bin" for index in range(len(bodies))]
-    for target, body in zip(targets, bodies):
-        target.write_bytes(body)
-    result["body_paths"] = targets
+    if result["bodies"]:
+        result["body"] = result["bodies"][0]
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{path.stem}.meta.bin").write_bytes(result["metadata"])
+        bodies = result["bodies"]
+        if len(bodies) == 1:
+            targets = [out_dir / f"{path.stem}.body.bin"]
+        else:
+            targets = [out_dir / f"{path.stem}.body.{index}.bin" for index in range(len(bodies))]
+        for target, body in zip(targets, bodies):
+            target.write_bytes(body)
+        result["body_paths"] = targets
     return result
 
 
