@@ -212,12 +212,7 @@ class PhpEmitter:
                 modifiers += " readonly"
             type_prefix = ""
             if prop.type:
-                if prop.is_nullable and "|" in prop.type:
-                    type_prefix = f"{prop.type}|null "
-                elif prop.is_nullable and prop.type not in ("mixed", "null", "void", "never"):
-                    type_prefix = f"?{prop.type} "
-                else:
-                    type_prefix = f"{prop.type} "
+                type_prefix = self._render_type_hint(prop.type, prop.is_nullable) + " "
             default = f" = {self._expr(prop.default)}" if prop.default is not None else ""
             lines.extend(self._doc_comment(prop.doc_comment, inner))
             lines.append(f"{inner}{modifiers} {type_prefix}${prop.name}{default};")
@@ -277,9 +272,10 @@ class PhpEmitter:
             return ""
         if type_hint in ("mixed", "void", "never"):
             return type_hint
-        if "|" in type_hint:
-            types = type_hint.split("|")
-            if nullable and "null" not in types:
+        if "|" in type_hint or "&" in type_hint:
+            if nullable and "null" not in type_hint.split("|"):
+                if "|" not in type_hint:
+                    return f"({type_hint})|null"
                 return f"{type_hint}|null"
             return type_hint
         return f"{'?' if nullable else ''}{type_hint}"

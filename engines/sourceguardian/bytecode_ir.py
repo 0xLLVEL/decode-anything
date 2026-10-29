@@ -436,20 +436,6 @@ def _parse_hashtable(r: StreamReader, ver: int) -> dict:
     return result
 
 
-def _skip_type_info(r: StreamReader, ver: int) -> None:
-    hi = r.read_u32()
-    if hi & 0x40000000:
-        count = r.read_u32()
-        for _ in range(count):
-            entry_hi = r.read_u32() if ver >= 0x21 else hi
-            if (entry_hi & 0x10000000) or ver < 0x21:
-                r.read_zstr()
-            elif entry_hi & 0x40000000:
-                _skip_type_info(r, ver)
-    elif hi & 0x11000000:
-        r.read_zstr()
-
-
 def _skip_attributes(r: StreamReader, ver: int) -> None:
     count = r.read_u32()
     for _ in range(count):
@@ -511,12 +497,14 @@ def parse_op_array(r: StreamReader, ver: int, has_hybrid_vm: bool = False) -> di
     required_num_args = r.read_u32()
 
     arg_names = []
+    return_type_info = None
     if fn_flags & 0x6000:            # return-type info precedes params
-        r.read_zstr()
-        _skip_type_info(r, ver)
+        r.read_zstr()                # arg_info name slot for the return entry
+        return_type_info = _read_type_info(r, ver)
+    arg_types: list[dict | None] = []
     for _ in range(num_args):
         arg_names.append(r.read_zstr() or '')
-        _skip_type_info(r, ver)
+        arg_types.append(_read_type_info(r, ver))
 
     function_name = r.read_zstr()
     r.read_zstr()                    # scope name
@@ -525,7 +513,9 @@ def parse_op_array(r: StreamReader, ver: int, has_hybrid_vm: bool = False) -> di
         return {
             'kind': 'function_stub', 'function_name': function_name or '',
             'fn_flags': fn_flags, 'num_args': num_args, 'required_num_args': required_num_args,
-            'arg_names': arg_names, 'opcodes': [], 'literals': [], 'cv_names': [],
+            'arg_names': arg_names, 'arg_types': arg_types,
+            'return_type_info': return_type_info,
+            'opcodes': [], 'literals': [], 'cv_names': [],
             'try_catches': [], 'line_start': None, 'line_end': None, 'doc_comment': None,
             'nested': [],
         }
@@ -570,6 +560,7 @@ def parse_op_array(r: StreamReader, ver: int, has_hybrid_vm: bool = False) -> di
     return {
         'kind': 'op_array', 'fn_flags': fn_flags,
         'function_name': function_name or '', 'arg_names': arg_names,
+        'arg_types': arg_types, 'return_type_info': return_type_info,
         'num_args': num_args, 'required_num_args': required_num_args,
         'literals': literals, 'opcode_count': opcode_count, 'T': T,
         'num_cvs': num_cvs, 'cv_names': cv_names, 'pre_data': pre_data,
@@ -744,33 +735,55 @@ def _decode_type_mask(mask: int) -> tuple[str | None, bool]:
     return "|".join(names), allow_null
 
 
+# The SG loader keeps the zend_type tag in the top three bits and masks it
+# with 0x70000000: a class/literal name, an intersection marker, a type list.
+_ZEND_TYPE_NAME_TAG = 0x10000000
+_ZEND_TYPE_LITERAL_NAME_TAG = 0x01000000
+_ZEND_TYPE_INTERSECTION_TAG = 0x20000000
+_ZEND_TYPE_LIST_TAG = 0x40000000
+
+
+def _read_type_node(r: StreamReader, ver: int, hi: int) -> tuple[str, str] | None:
+    """Read one serialized zend_type as ``(rendered, kind)``.
+
+    ``kind`` is ``atom``, ``union`` or ``intersection``. Nested groups of a
+    different kind are parenthesized so DNF stays valid PHP.
+    """
+    if hi & _ZEND_TYPE_LIST_TAG:
+        count = r.read_u32()
+        members: list[tuple[str, str]] = []
+        for _ in range(count):
+            if ver < 0x21:
+                members.append((r.read_zstr() or "mixed", "atom"))
+                continue
+            member_hi = r.read_u32()
+            member = _read_type_node(r, ver, member_hi) if member_hi else None
+            if member:
+                members.append(member)
+        if not members:
+            return None
+        kind = "intersection" if hi & _ZEND_TYPE_INTERSECTION_TAG else "union"
+        separator = "&" if kind == "intersection" else "|"
+        rendered = [
+            f"({text})" if member_kind not in ("atom", kind) else text
+            for text, member_kind in members
+        ]
+        return separator.join(rendered), kind
+    if hi & (_ZEND_TYPE_NAME_TAG | _ZEND_TYPE_LITERAL_NAME_TAG):
+        return (r.read_zstr() or "mixed"), "atom"
+    type_name, _ = _decode_type_mask(hi)
+    return (type_name, "atom") if type_name else None
+
+
 def _read_type_info(r: StreamReader, ver: int) -> dict | None:
     """Parse the SG type blob and return ``{type_name, allow_null}``."""
     hi = r.read_u32()
     if not hi:
         return None
-    if hi & 0x40000000:
-        count = r.read_u32()
-        members: list[str] = []
-        for _ in range(count):
-            member_hi = r.read_u32() if ver >= 0x21 else hi
-            if (member_hi & 0x10000000) or ver < 0x21:
-                members.append(r.read_zstr() or "mixed")
-            elif member_hi & 0x40000000:
-                nested = _read_type_info(r, ver)
-                if nested and nested.get("type_name"):
-                    members.append(nested["type_name"])
-            else:
-                name, _ = _decode_type_mask(member_hi)
-                members.append(name or "mixed")
-        type_name = "|".join(dict.fromkeys(members)) or None
-        return {"type_name": type_name, "allow_null": bool(hi & 0x2)}
-    if hi & 0x11000000:
-        return {"type_name": r.read_zstr(), "allow_null": bool(hi & 0x2)}
-    type_name, allow_null = _decode_type_mask(hi)
-    if not type_name:
+    node = _read_type_node(r, ver, hi)
+    if not node:
         return None
-    return {"type_name": type_name, "allow_null": allow_null}
+    return {"type_name": node[0], "allow_null": bool(hi & 0x2)}
 
 
 def _parse_class_props(r: StreamReader, ver: int) -> dict:
@@ -1030,21 +1043,24 @@ def _normalize_oparray(
     fn_flags = oa.get("fn_flags", 0)
 
     arg_names = oa.get("arg_names", [])
+    arg_types = oa.get("arg_types", [])
     required_num_args = oa.get("required_num_args")
     if not isinstance(required_num_args, int):
         required_num_args = len(arg_names)
-    arg_info = [
-        {
-            "index": i,
-            "name": name,
-            "type_name": None,
-            "pass_by_reference": False,
-            "allow_null": False,
-            "is_variadic": False,
-            "has_default": i >= required_num_args,
-        }
-        for i, name in enumerate(arg_names)
-    ]
+    arg_info = []
+    for i, name in enumerate(arg_names):
+        type_info = arg_types[i] if i < len(arg_types) and isinstance(arg_types[i], dict) else None
+        arg_info.append(
+            {
+                "index": i,
+                "name": name,
+                "type_name": type_info.get("type_name") if type_info else None,
+                "pass_by_reference": False,
+                "allow_null": bool(type_info.get("allow_null")) if type_info else False,
+                "is_variadic": False,
+                "has_default": i >= required_num_args,
+            }
+        )
 
     cv_names = oa.get("cv_names", [])
     vars_dict = {str(i): name for i, name in enumerate(cv_names)}
@@ -1093,6 +1109,7 @@ def _normalize_oparray(
         "num_args": oa.get("num_args", len(arg_names)),
         "required_num_args": oa.get("required_num_args", len(arg_names)),
         "arg_info": arg_info,
+        "return_type_info": oa.get("return_type_info"),
         "vars": vars_dict,
         "literals": literals,
         "try_catch": oa.get("try_catches", []),

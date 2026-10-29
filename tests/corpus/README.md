@@ -9,7 +9,7 @@ golden output (`hello.expected.php`).
 | --- | --- | --- |
 | `yakpro/` | YAK Pro | Handwritten source-level obfuscation: dispatcher `goto`s, inverted guard, hex-escaped literals, YAK Pro header |
 | `sourceguardian/hello.php` | SourceGuardian | Real `sg_load` container wrapping a PHP 8.1 `op_array` that echoes a string |
-| `sourceguardian/class.php` | SourceGuardian | Same container format, carrying a final class with static/instance properties, typed + nullable + readonly declarations, defaults, and a default parameter |
+| `sourceguardian/class.php` | SourceGuardian | Same container format, carrying a final class with static/instance properties, typed + nullable + readonly declarations, union/intersection/DNF types, defaults, and typed method signatures with return types |
 
 ## Provenance
 

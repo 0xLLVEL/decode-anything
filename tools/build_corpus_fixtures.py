@@ -70,6 +70,10 @@ def union_type_info(members: list[bytes], nullable: bool = False) -> bytes:
     return u32(0x40000000 | (0x2 if nullable else 0)) + u32(len(members)) + b"".join(members)
 
 
+def intersection_type_info(members: list[bytes], nullable: bool = False) -> bytes:
+    return u32(0x60000000 | (0x2 if nullable else 0)) + u32(len(members)) + b"".join(members)
+
+
 def opcode(
     number: int,
     *,
@@ -90,21 +94,28 @@ def op_array(
     num_args: int = 0,
     required_num_args: int = 0,
     arg_names: list[str] | None = None,
+    arg_types: list[bytes] | None = None,
+    return_type: bytes | None = None,
 ) -> bytes:
     literals = literals or []
     opcodes = opcodes or []
     arg_names = arg_names or []
+    arg_types = arg_types or []
+    fn_flags = 0x2000 if return_type is not None else 0  # ZEND_ACC_HAS_RETURN_TYPE
 
     buf = bytearray()
     buf.append(0xFF)                 # version gate terminator
     buf.append(2)                    # full op_array
-    buf.extend(u32(0))               # fn_flags
+    buf.extend(u32(fn_flags))
     buf.extend(b"\x00\x00\x00")
     buf.extend(u32(num_args))
     buf.extend(u32(required_num_args))
-    for arg_name in arg_names:
+    if return_type is not None:
+        buf.extend(zstr(None))       # arg_info name slot for the return entry
+        buf.extend(return_type)
+    for index, arg_name in enumerate(arg_names):
         buf.extend(zstr(arg_name))
-        buf.extend(u32(0))           # arg type info
+        buf.extend(arg_types[index] if index < len(arg_types) else u32(0))
     buf.extend(zstr(function_name or None))
     buf.extend(zstr(None))           # scope name
     buf.extend(u32(len(literals)))
@@ -244,6 +255,21 @@ def class_body() -> bytes:
         num_args=1,
         required_num_args=0,
         arg_names=["greeting"],
+        arg_types=[builtin_type_info(0x40)],  # MAY_BE_STRING
+        return_type=union_type_info([u32(0x10), u32(0x40)]),  # int|string
+    )
+    countable = class_type_info("Countable")
+    array_access = class_type_info("ArrayAccess")
+    restricted = intersection_type_info([countable, array_access])
+    collect = op_array(
+        function_name="collect",
+        literals=[zval_int(1)],
+        opcodes=[opcode(PHP_81_RETURN, op1_nibble=3, payload=b"\x00" + u32(0))],
+        num_args=1,
+        required_num_args=1,
+        arg_names=["items"],
+        arg_types=[restricted],
+        return_type=union_type_info([restricted, class_type_info("Traversable")]),
     )
     greeter = class_record(
         "Greeter",
@@ -269,9 +295,23 @@ def class_body() -> bytes:
                 zval_undef(),
                 type_info=union_type_info([u32(0x10), u32(0x40)], nullable=True),
             ),
+            property_record(
+                "both",
+                ZEND_ACC_PUBLIC,
+                zval_undef(),
+                type_info=restricted,
+            ),
+            property_record(
+                "either",
+                ZEND_ACC_PUBLIC,
+                zval_undef(),
+                type_info=union_type_info(
+                    [restricted, class_type_info("Traversable")], nullable=True
+                ),
+            ),
         ],
         static_properties=1,
-        methods=[("greet", greet)],
+        methods=[("greet", greet), ("collect", collect)],
     )
     return body(classes=[greeter], main=return_one())
 

@@ -51,6 +51,8 @@ def make_synthetic_op_array(
     num_args: int = 0,
     required_num_args: int = 0,
     arg_names: list[str] = None,
+    arg_types: list[bytes] = None,
+    return_type: bytes = None,
 ) -> bytes:
     if cv_names is None:
         cv_names = []
@@ -60,6 +62,10 @@ def make_synthetic_op_array(
         opcodes = []
     if arg_names is None:
         arg_names = []
+    if arg_types is None:
+        arg_types = []
+    if return_type is not None:
+        fn_flags |= 0x2000  # ZEND_ACC_HAS_RETURN_TYPE
 
     buf = bytearray()
     # version_gate (ver=0x21 >= 0x17): immediate 0xFF terminator
@@ -71,9 +77,12 @@ def make_synthetic_op_array(
     buf.extend(b"\x00\x00\x00")
     buf.extend(u32(num_args))
     buf.extend(u32(required_num_args))
-    for arg_name in arg_names:
+    if fn_flags & 0x6000:
+        buf.extend(zstr(None))
+        buf.extend(return_type if return_type is not None else u32(0))
+    for index, arg_name in enumerate(arg_names):
         buf.extend(zstr(arg_name))
-        buf.extend(u32(0))  # type info
+        buf.extend(arg_types[index] if index < len(arg_types) else u32(0))
     # function_name
     buf.extend(zstr(function_name if function_name else None))
     # scope_name
@@ -298,6 +307,10 @@ def builtin_type_info(mask: int, nullable: bool = False) -> bytes:
 
 def union_type_info(members: list[bytes], nullable: bool = False) -> bytes:
     return u32(0x40000000 | (0x2 if nullable else 0)) + u32(len(members)) + b"".join(members)
+
+
+def intersection_type_info(members: list[bytes], nullable: bool = False) -> bytes:
+    return u32(0x60000000 | (0x2 if nullable else 0)) + u32(len(members)) + b"".join(members)
 
 
 def make_synthetic_class(
@@ -671,5 +684,97 @@ def test_synthetic_typed_properties_keep_types_nullable_and_readonly():
     assert "public ?DateTimeImmutable $created;" in php_code
     assert "public readonly string $id;" in php_code
     assert "public int|string|null $value;" in php_code
+
+
+def test_synthetic_type_info_distinguishes_union_intersection_and_dnf():
+    undef = u32(0) + u32(0)
+    countable = class_type_info("Countable")
+    array_access = class_type_info("ArrayAccess")
+    class_bytes = make_synthetic_class(
+        "Typed",
+        properties=[
+            make_synthetic_property(
+                "union",
+                0x01,
+                undef,
+                type_info=union_type_info([u32(0x10), u32(0x40)]),
+            ),
+            make_synthetic_property(
+                "both",
+                0x01,
+                undef,
+                type_info=intersection_type_info([countable, array_access]),
+            ),
+            make_synthetic_property(
+                "either",
+                0x01,
+                undef,
+                type_info=union_type_info(
+                    [intersection_type_info([countable, array_access]), class_type_info("Traversable")],
+                    nullable=True,
+                ),
+            ),
+        ],
+    )
+
+    ir = build_ir(
+        make_synthetic_container([class_bytes], _main_return()),
+        source_file="typed.php",
+    )
+    props = next(iter(ir["class_index"].values()))["properties_merged"]
+    assert props["union"]["type_name"] == "int|string"
+    assert props["both"]["type_name"] == "Countable&ArrayAccess"
+    assert props["either"]["type_name"] == "(Countable&ArrayAccess)|Traversable"
+
+    php_code = emit_php(optimize(decompile_program(parse_dump(ir))))
+    assert "public int|string $union;" in php_code
+    assert "public Countable&ArrayAccess $both;" in php_code
+    assert "public (Countable&ArrayAccess)|Traversable|null $either;" in php_code
+
+
+def test_synthetic_signature_keeps_parameter_and_return_types():
+    countable = class_type_info("Countable")
+    array_access = class_type_info("ArrayAccess")
+    restricted = intersection_type_info([countable, array_access])
+    method_bytes = make_synthetic_op_array(
+        function_name="format",
+        literals=[make_zval_int(1)],
+        opcodes=[
+            make_synthetic_opcode(
+                opcode_num=62,
+                op1_nibble=3,
+                payload=b"\x00" + u32(0),
+            )
+        ],
+        num_args=3,
+        required_num_args=3,
+        arg_names=["when", "format", "items"],
+        arg_types=[
+            class_type_info("DateTimeImmutable", nullable=True),
+            builtin_type_info(0x40),  # MAY_BE_STRING
+            restricted,
+        ],
+        return_type=union_type_info([restricted, class_type_info("Traversable")]),
+    )
+    class_bytes = make_synthetic_class("Formatter", methods=[("format", method_bytes)])
+
+    ir = build_ir(
+        make_synthetic_container([class_bytes], _main_return()),
+        source_file="signature.php",
+    )
+    method = ir["op_arrays"]["method:Formatter::format"]
+    assert method["arg_info"][0]["type_name"] == "DateTimeImmutable"
+    assert method["arg_info"][0]["allow_null"] is True
+    assert method["arg_info"][2]["type_name"] == "Countable&ArrayAccess"
+    assert method["return_type_info"] == {
+        "type_name": "(Countable&ArrayAccess)|Traversable",
+        "allow_null": False,
+    }
+
+    php_code = emit_php(optimize(decompile_program(parse_dump(ir))))
+    assert (
+        "public function format(?DateTimeImmutable $when, string $format, "
+        "Countable&ArrayAccess $items): (Countable&ArrayAccess)|Traversable"
+    ) in php_code
 
 

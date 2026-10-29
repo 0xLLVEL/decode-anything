@@ -9,7 +9,9 @@ import re
 
 from ..utils import is_valid_php_identifier
 
-_TYPE_PART_RE = r"\\?[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*"
+_TYPE_ATOM_RE = r"\\?[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*"
+_TYPE_GROUP_RE = rf"{_TYPE_ATOM_RE}(?:&{_TYPE_ATOM_RE})*"
+_TYPE_PART_RE = rf"(?:\({_TYPE_GROUP_RE}\)|{_TYPE_GROUP_RE})"
 _TYPE_NAME_RE = re.compile(rf"^\??{_TYPE_PART_RE}(\|{_TYPE_PART_RE})*$")
 
 
