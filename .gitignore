@@ -30,7 +30,7 @@ tmp/
 decoded_*/
 reports/
 
-# SourceGuardian loader keys (extracted, never committed)
+# SourceGuardian loader keys, local only on every branch
 sg_keys.py
 
 

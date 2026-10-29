@@ -63,7 +63,13 @@ def handle_init_static_method_call(ctx: DecompileContext, op: Opcode) -> None:
 
 @opcode_handler("ZEND_NEW")
 def handle_new(ctx: DecompileContext, op: Opcode) -> None:
-    class_name = _const_str(ctx, op, op.op1)
+    if op.op1.is_unused:
+        fetch_type = (op.extended_value or 0) & 0x0F
+        if not fetch_type and op.op1.var is not None:
+            fetch_type = op.op1.var & 0x0F
+        class_name: object = _RELATIVE_CLASS.get(fetch_type, "self")
+    else:
+        class_name = _const_str(ctx, op, op.op1)
     ctx.call_stack.append(
         CallFrame(kind="new", class_name=class_name, new_result_key=op.result.temp_key)
     )
