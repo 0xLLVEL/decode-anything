@@ -197,6 +197,52 @@ def test_invert_condition_negates_without_changing_meaning(condition, expected):
     assert _invert_condition(condition) == expected
 
 
+def test_unresolved_variable_is_not_replaced_with_server_superglobal():
+    result = clean_php_source('<?php\n$x = ${None}["HTTP_HOST"];\n')
+
+    assert "$_SERVER" not in result
+    assert "${None}" in result.replace("\n", "")
+
+
+def test_null_concat_is_not_rewritten_to_dir_constant():
+    result = clean_php_source("<?php\n$p = null . '/../config.php';\n")
+
+    assert "__DIR__" not in result
+    assert "null . '/../config.php'" in result
+
+
+def test_null_array_key_is_not_dropped():
+    result = clean_php_source("<?php\n$a = [null => $v];\n")
+
+    assert "[null => $v]" in result
+
+
+def test_parent_calls_are_not_rewritten_to_self():
+    result = clean_php_source(
+        "<?php\nclass A {\n"
+        "    public function __construct() {\n"
+        "        parent::__construct();\n"
+        "    }\n}"
+    )
+
+    assert "parent::__construct();" in result
+
+
+def test_unstructured_catch_uses_throwable_instead_of_exception():
+    result = clean_php_source(
+        "<?php\nfunction f() {\n"
+        "    $a = 1;\n"
+        "    goto label_5;\n"
+        "    /* [opcode 42] ZEND_CATCH unstructured catch */\n"
+        "    echo 'caught';\n"
+        "    label_5:\n"
+        "    return 1;\n}\n"
+    )
+
+    assert "catch (\\Throwable $e) {" in result
+    assert "catch (\\Exception" not in result
+
+
 def test_leaked_compiler_temps_keep_their_assignments_and_identity():
     result = clean_php_source(
         "<?php\n$a = $tmp3;\n$b = $tmp4;\nfoo($a, $b);\n"

@@ -648,14 +648,8 @@ def clean_php_source(raw_php: str) -> str:
         # Strip namespace prefix from local references inside the file
         raw_php = re.sub(re.escape(namespace) + r'\\', '', raw_php, flags=re.IGNORECASE)
 
-    # 2. Fix directory paths: null . '/../...' -> __DIR__ . '/../...'
-    raw_php = re.sub(r"null\s*\.\s*(['\"]/[^'\"]+['\"])", r"__DIR__ . \1", raw_php)
-
-    # 3. Fix unresolved method/constructor/variable names
+    # 2. Fix unresolved constructor calls
     raw_php = re.sub(r'\b(?:self|parent)::\?\(\);', 'parent::__construct();', raw_php)
-    raw_php = re.sub(r'\(\$\{None\}\)', '$_SERVER', raw_php)
-    raw_php = re.sub(r'\$\{None\}', '$_SERVER', raw_php)
-    raw_php = re.sub(r'\[null\s*=>\s*(\$[A-Za-z0-9_]+)\]', r"[\1]", raw_php)
 
     # 5. Handle try/catch structures line-by-line
     def _clean_try_catches(code: str) -> str:
@@ -724,7 +718,10 @@ def clean_php_source(raw_php: str) -> str:
                                 out.append(f"{indent}try {{")
                                 for tl in try_lines:
                                     out.append(f"    {tl}" if tl.strip() else "")
-                                out.append(f"{indent}}} catch (\\Exception {exc_var}) {{")
+                                # The original catch type is not recoverable from
+                                # an unstructured catch; Throwable is the only safe
+                                # supertype that cannot be narrower than the source.
+                                out.append(f"{indent}}} catch (\\Throwable {exc_var}) {{")
                                 for cl in catch_lines:
                                     out.append(f"{indent_inner}{cl.strip()}" if cl.strip() else "")
                                 out.append(f"{indent}}}")
@@ -736,10 +733,6 @@ def clean_php_source(raw_php: str) -> str:
         return "\n".join(out)
 
     raw_php = _clean_try_catches(raw_php)
-
-    # In classes without extends, replace parent:: with self::
-    if not re.search(r'\bclass\s+\w+\s+extends\b', raw_php):
-        raw_php = re.sub(r'\bparent::', 'self::', raw_php)
 
     # 6. Clean up unreachable duplicate returns (e.g. `return $x;\n return null;`)
     def _clean_duplicate_returns(code: str) -> str:
