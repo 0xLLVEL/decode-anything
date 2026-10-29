@@ -117,15 +117,11 @@ def test_empty_control_flow_body_is_rejected():
     assert message == "line 2: empty if body"
 
 
-def test_empty_control_flow_keywords_are_all_rejected():
+def test_empty_branch_bodies_are_rejected():
     cases = {
         "if": "if ($x) {\n}\n",
         "elseif": "if ($x) {\n    foo();\n} elseif ($y) {\n}\n",
         "else": "if ($x) {\n    foo();\n} else {\n}\n",
-        "for": "for ($i = 0; $i < 1; $i++) {\n}\n",
-        "foreach": "foreach ($xs as $x) {\n}\n",
-        "while": "while ($x) {\n}\n",
-        "do": "do {\n} while ($x);\n",
         "switch": "switch ($x) {\n}\n",
     }
 
@@ -133,6 +129,32 @@ def test_empty_control_flow_keywords_are_all_rejected():
         ok, message = validate_php_structure("<?php\n" + body)
         assert ok is False, keyword
         assert f"empty {keyword} body" in message, keyword
+
+
+def test_empty_loop_bodies_are_valid_php():
+    cases = (
+        "for ($i = 0; $i < 1; $i++) {\n}\n",
+        "foreach ($xs as $x) {\n}\n",
+        "while ($x) {\n}\n",
+        "do {\n} while ($x);\n",
+    )
+
+    for body in cases:
+        assert validate_php_structure("<?php\n" + body) == (True, ""), body
+
+
+def test_empty_loop_with_side_effect_in_condition_is_preserved():
+    result = clean_php_source(
+        "<?php\n"
+        "while (($row = $stmt->fetch()) !== false) {\n"
+        "}\n"
+        "do {\n"
+        "} while (($line = fgets($fh)) !== false);\n"
+    )
+
+    assert "while (($row = $stmt->fetch()) !== false) {" in result
+    assert "do {" in result
+    assert "} while (($line = fgets($fh)) !== false);" in result
 
 
 def test_control_flow_bodies_in_strings_and_comments_are_ignored():

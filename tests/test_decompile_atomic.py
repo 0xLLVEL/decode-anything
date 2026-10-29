@@ -78,11 +78,11 @@ def test_atomic_write_keeps_structurally_invalid_output_for_non_in_place_target(
     target = tmp_path / "out.php"
 
     syntax_ok, structure_ok, _message, wrote = _write_output_atomically(
-        target, "<?php\nforeach ($xs as $x) {\n}\n", preserve_on_failure=False
+        target, "<?php\nif ($x) {\n}\n", preserve_on_failure=False
     )
 
     assert (syntax_ok, structure_ok, wrote) == (True, False, True)
-    assert target.read_text() == "<?php\nforeach ($xs as $x) {\n}\n"
+    assert target.read_text() == "<?php\nif ($x) {\n}\n"
 
 
 def test_main_returns_two_when_syntax_check_fails(tmp_path, monkeypatch):

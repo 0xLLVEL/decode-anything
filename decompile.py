@@ -655,8 +655,6 @@ def clean_php_source(raw_php: str) -> str:
     raw_php = re.sub(r'\b(?:self|parent)::\?\(\);', 'parent::__construct();', raw_php)
     raw_php = re.sub(r'\(\$\{None\}\)', '$_SERVER', raw_php)
     raw_php = re.sub(r'\$\{None\}', '$_SERVER', raw_php)
-    raw_php = re.sub(r'^[ \t]*do\s*\{\s*\}\s*while\s*\([^\n]+\);\s*\n?', '', raw_php, flags=re.MULTILINE)
-    raw_php = re.sub(r'^[ \t]*while\s*\([^\n]+\)\s*\{\s*\}\s*\n?', '', raw_php, flags=re.MULTILINE)
     raw_php = re.sub(r'\[null\s*=>\s*(\$[A-Za-z0-9_]+)\]', r"[\1]", raw_php)
 
     # 5. Handle try/catch structures line-by-line
@@ -964,8 +962,11 @@ def validate_php_syntax(php_file: Path) -> tuple[bool, str]:
         return False, f"syntax validation failed: {exc}"
 
 
-_EMPTY_BODY_KEYWORD = re.compile(r"\b(?:if|elseif|else|for|foreach|while|do|switch)\b")
-_PAREN_BODY_KEYWORDS = frozenset({"if", "elseif", "for", "foreach", "while", "switch"})
+# Empty loop bodies are valid PHP and often carry their work in the
+# condition (`while (($row = $stmt->fetch()) !== false) {}`), so only empty
+# branch bodies are treated as reconstruction failures.
+_EMPTY_BODY_KEYWORD = re.compile(r"\b(?:if|elseif|else|switch)\b")
+_PAREN_BODY_KEYWORDS = frozenset({"if", "elseif", "switch"})
 
 
 def _mask_php_literals(code: str) -> str:
@@ -1073,7 +1074,7 @@ def _control_flow_body_open(code: str, keyword: str, keyword_end: int) -> int | 
 
 
 def validate_php_structure(php_code: str) -> tuple[bool, str]:
-    """Reject generated PHP that contains an empty control-flow body."""
+    """Reject generated PHP that contains an empty branch body."""
     if "<?php" not in php_code[:32]:
         return True, ""
 
