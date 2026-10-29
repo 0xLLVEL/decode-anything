@@ -51,6 +51,7 @@ def _get_dll_candidates(dll_path: Path | None, php_version: int = 81) -> list[Pa
     ver_str = f"{php_version // 10}.{php_version % 10}"
     base = Path(__file__).resolve().parent
     candidates = [
+        base / "loader" / f"ioncube_loader_win_{ver_str}.dll",
         base / f"ioncube_loader_win_{ver_str}.dll",
         base.parents[1] / "runtime" / "ext" / f"ioncube_loader_win_{ver_str}.dll",
     ]
