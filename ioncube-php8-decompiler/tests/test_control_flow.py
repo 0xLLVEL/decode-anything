@@ -95,6 +95,27 @@ def test_bottom_tested_while_with_side_effect_condition():
     assert "use_row($row);" in out
 
 
+def test_nop_merge_chain_is_not_a_while_latch():
+    # The fallthrough JMP lands on a NOP closed by another JMP: that is a
+    # permuted merge block, not the start of a loop condition.
+    out = fn([
+        op("ZEND_NOP"),
+        op("ZEND_JMP", jump=[9]),
+        op("ZEND_JMPZ", op1=cv(0, "again"), jump=[6]),
+        op("ZEND_ECHO", op1=const("x")),
+        op("ZEND_JMP", jump=[11]),
+        op("ZEND_JMP", jump=[0]),
+        op("ZEND_NOP"),
+        op("ZEND_JMP", jump=[10]),
+        op("ZEND_NOP"),
+        op("ZEND_ECHO", op1=const("y")),
+        op("ZEND_RETURN", op1=const(None)),
+        op("ZEND_RETURN", op1=const(None)),
+    ], cvs=["again"])
+    assert "while ($again)" not in out
+    assert "if ($again) {\n        echo 'x';" in out
+
+
 def test_foreach_value_only():
     out = fn([
         op("ZEND_FE_RESET_R", op1=cv(0, "items"), result=tmp(96), jump=[4]),

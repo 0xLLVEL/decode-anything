@@ -1,0 +1,2707 @@
+{
+  "format": "icdump-ir-v1",
+  "source_file": "cfg_closure_backward_trampoline.json",
+  "entry": "main",
+  "op_arrays": {
+    "main": {
+      "kind": "main",
+      "meta": {},
+      "function_name": null,
+      "vars": {
+        "type": "array",
+        "value": {}
+      },
+      "arg_info": [],
+      "num_args": 0,
+      "required_num_args": 0,
+      "fn_flags_decoded": {},
+      "literals": [],
+      "try_catch": [],
+      "opcodes": []
+    },
+    "function:6764706c617965725c636f72655c7b636c6f737572657d#closure_2": {
+      "id": "function:6764706c617965725c636f72655c7b636c6f737572657d#closure_2",
+      "kind": "closure",
+      "meta": {
+        "function_table_key": {
+          "type": "string",
+          "length": 23,
+          "printable": true,
+          "value": "gdplayer\\core\\{closure}",
+          "preview": "gdplayer\\core\\{closure}",
+          "hex": "6764706c617965725c636f72655c7b636c6f737572657d",
+          "base64": "Z2RwbGF5ZXJcY29yZVx7Y2xvc3VyZX0=",
+          "sha1": "f7f09268607c211be078b247532e8eaf5ce9e3c4"
+        },
+        "function_table_key_hex": "6764706c617965725c636f72655c7b636c6f737572657d",
+        "source": {
+          "type": "string",
+          "length": 13,
+          "printable": true,
+          "value": "loader_static",
+          "preview": "loader_static",
+          "hex": "6c6f616465725f737461746963",
+          "base64": "bG9hZGVyX3N0YXRpYw==",
+          "sha1": "bc9dfc6f5cfe79e5f8d5f226f64da4c3456f4e1a"
+        },
+        "static_dump_status": {},
+        "ioncube_try_catch_raw": [
+          {
+            "try_op": 0,
+            "catch_op": null,
+            "finally_op": 3,
+            "finally_end": 9
+          },
+          {
+            "try_op": 3,
+            "catch_op": null,
+            "finally_op": 5,
+            "finally_end": 10
+          },
+          {
+            "try_op": 7,
+            "catch_op": null,
+            "finally_op": 17,
+            "finally_end": 18
+          },
+          {
+            "try_op": 8,
+            "catch_op": null,
+            "finally_op": 18,
+            "finally_end": 20
+          }
+        ],
+        "parent": "function:7061727365646f776e6c6f616468746d6c"
+      },
+      "function_name": {
+        "type": "string",
+        "length": 23,
+        "printable": true,
+        "value": "GDPlayer\\Core\\{closure}",
+        "preview": "GDPlayer\\Core\\{closure}",
+        "hex": "4744506c617965725c436f72655c7b636c6f737572657d",
+        "base64": "R0RQbGF5ZXJcQ29yZVx7Y2xvc3VyZX0=",
+        "sha1": "c747616ab1d3946f49ec618b1e43eb20627c2d78"
+      },
+      "filename": {
+        "type": "string",
+        "length": 84,
+        "printable": true,
+        "value": "C:\\Users\\ezan\\Documents\\gdplayer-4.8.6_Untouched\\includes\\classes\\Core\\YetiShare.php",
+        "preview": "C:\\Users\\ezan\\Documents\\gdplayer-4.8.6_Untouched\\includes\\classes\\Core\\YetiShare.php",
+        "hex": "433a5c55736572735c657a616e5c446f63756d656e74735c6764706c617965722d342e382e365f556e746f75636865645c696e636c756465735c636c61737365735c436f72655c5965746953686172652e706870",
+        "base64": "QzpcVXNlcnNcZXphblxEb2N1bWVudHNcZ2RwbGF5ZXItNC44LjZfVW50b3VjaGVkXGluY2x1ZGVzXGNsYXNzZXNcQ29yZVxZZXRpU2hhcmUucGhw",
+        "sha1": "9c1e4a48a4915a6eaaa2298096ea58972d6d422e"
+      },
+      "scope": {
+        "type": "null",
+        "value": null
+      },
+      "line_start": 14,
+      "line_end": 14,
+      "fn_flags": 2151817472,
+      "fn_flags_decoded": {
+        "visibility": "none",
+        "is_static": false,
+        "is_abstract": false,
+        "is_final": false,
+        "is_ctor": true,
+        "is_dtor": false,
+        "is_deprecated": false,
+        "is_closure": false,
+        "is_generator": false,
+        "is_variadic": false,
+        "returns_reference": false,
+        "has_return_type": false
+      },
+      "num_args": 1,
+      "required_num_args": 0,
+      "arg_info": [
+        {
+          "index": 0,
+          "name": "response",
+          "type_name": "string",
+          "class_name": null,
+          "type_code": 64,
+          "pass_by_reference": false,
+          "allow_null": false,
+          "is_variadic": false,
+          "has_default": true
+        }
+      ],
+      "return_type_info": {
+        "type_name": "void",
+        "allow_null": false,
+        "type_code": 16384
+      },
+      "doc_comment": {
+        "type": "null",
+        "value": null
+      },
+      "vars": {
+        "type": "array",
+        "value": [
+          {
+            "type": "string",
+            "length": 8,
+            "printable": true,
+            "value": "response",
+            "preview": "response",
+            "hex": "726573706f6e7365",
+            "base64": "cmVzcG9uc2U=",
+            "sha1": "0ec6d150549780250a9772c06b619bcc46a0e560"
+          },
+          {
+            "type": "string",
+            "length": 23,
+            "printable": true,
+            "value": "downloadResponsePayload",
+            "preview": "downloadResponsePayload",
+            "hex": "646f776e6c6f6164526573706f6e73655061796c6f6164",
+            "base64": "ZG93bmxvYWRSZXNwb25zZVBheWxvYWQ=",
+            "sha1": "e328ff2904c62ff3432d126ad4c1473ffda5a707"
+          }
+        ]
+      },
+      "vars_raw": {
+        "type": "array",
+        "value": [
+          {
+            "type": "string",
+            "length": 8,
+            "printable": true,
+            "value": "response",
+            "preview": "response",
+            "hex": "726573706f6e7365",
+            "base64": "cmVzcG9uc2U=",
+            "sha1": "0ec6d150549780250a9772c06b619bcc46a0e560"
+          },
+          {
+            "type": "string",
+            "length": 23,
+            "printable": true,
+            "value": "downloadResponsePayload",
+            "preview": "downloadResponsePayload",
+            "hex": "646f776e6c6f6164526573706f6e73655061796c6f6164",
+            "base64": "ZG93bmxvYWRSZXNwb25zZVBheWxvYWQ=",
+            "sha1": "e328ff2904c62ff3432d126ad4c1473ffda5a707"
+          }
+        ]
+      },
+      "last_var": 2,
+      "T": 17,
+      "static_variables": {
+        "type": "null",
+        "value": null
+      },
+      "try_catch": [
+        {
+          "try_op": 0,
+          "catch_op": null,
+          "finally_op": 3,
+          "finally_end": 9
+        },
+        {
+          "try_op": 3,
+          "catch_op": null,
+          "finally_op": 5,
+          "finally_end": 10
+        },
+        {
+          "try_op": 7,
+          "catch_op": null,
+          "finally_op": 17,
+          "finally_end": 18
+        },
+        {
+          "try_op": 8,
+          "catch_op": null,
+          "finally_op": 18,
+          "finally_end": 20
+        }
+      ],
+      "live_range": [
+        {
+          "var": 80,
+          "start": 4,
+          "end": 10
+        },
+        {
+          "var": 144,
+          "start": 6,
+          "end": 11
+        },
+        {
+          "var": 208,
+          "start": 18,
+          "end": 19
+        },
+        {
+          "var": 224,
+          "start": 19,
+          "end": 21
+        }
+      ],
+      "literals": [
+        {
+          "index": 0,
+          "type": "string",
+          "length": 0,
+          "printable": true,
+          "value": "",
+          "preview": "",
+          "hex": "",
+          "base64": "",
+          "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        },
+        {
+          "index": 1,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 2,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 3,
+          "type": "string",
+          "length": 7,
+          "printable": true,
+          "value": "sources",
+          "preview": "sources",
+          "hex": "736f7572636573",
+          "base64": "c291cmNlcw==",
+          "sha1": "bce16dd0260827ecf338c787f1206f77860cacc5"
+        },
+        {
+          "index": 4,
+          "type": "string",
+          "length": 3,
+          "printable": true,
+          "value": "url",
+          "preview": "url",
+          "hex": "75726c",
+          "base64": "dXJs",
+          "sha1": "81736358b1645103ae83247b10c5f82af641ddfc"
+        },
+        {
+          "index": 5,
+          "type": "string",
+          "length": 4,
+          "printable": true,
+          "value": "file",
+          "preview": "file",
+          "hex": "66696c65",
+          "base64": "ZmlsZQ==",
+          "sha1": "971c419dd609331343dee105fffd0f4608dc0bf2"
+        },
+        {
+          "index": 6,
+          "type": "string",
+          "length": 9,
+          "printable": true,
+          "value": "videoType",
+          "preview": "videoType",
+          "hex": "766964656f54797065",
+          "base64": "dmlkZW9UeXBl",
+          "sha1": "bf42574423dddd49454a9b47d66919ef33139146"
+        },
+        {
+          "index": 7,
+          "type": "string",
+          "length": 4,
+          "printable": true,
+          "value": "type",
+          "preview": "type",
+          "hex": "74797065",
+          "base64": "dHlwZQ==",
+          "sha1": "d0a3e7f81a9885e99049d1cae0336d269d5e47a9"
+        },
+        {
+          "index": 8,
+          "type": "string",
+          "length": 8,
+          "printable": true,
+          "value": "Original",
+          "preview": "Original",
+          "hex": "4f726967696e616c",
+          "base64": "T3JpZ2luYWw=",
+          "sha1": "c0a8060f3b1102da85ef318544468f24221e6515"
+        },
+        {
+          "index": 9,
+          "type": "string",
+          "length": 5,
+          "printable": true,
+          "value": "label",
+          "preview": "label",
+          "hex": "6c6162656c",
+          "base64": "bGFiZWw=",
+          "sha1": "64c65374dbab6fe3762748196d9d3a9610e2e5a9"
+        },
+        {
+          "index": 10,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 11,
+          "type": "string",
+          "length": 23,
+          "printable": true,
+          "value": "GDPlayer\\Logging\\Logger",
+          "preview": "GDPlayer\\Logging\\Logger",
+          "hex": "4744506c617965725c4c6f6767696e675c4c6f67676572",
+          "base64": "R0RQbGF5ZXJcTG9nZ2luZ1xMb2dnZXI=",
+          "sha1": "a4337a6a8e0e8450bb2f0f8ed542f7ffebe5ca95"
+        },
+        {
+          "index": 12,
+          "type": "string",
+          "length": 23,
+          "printable": true,
+          "value": "gdplayer\\logging\\logger",
+          "preview": "gdplayer\\logging\\logger",
+          "hex": "6764706c617965725c6c6f6767696e675c6c6f67676572",
+          "base64": "Z2RwbGF5ZXJcbG9nZ2luZ1xsb2dnZXI=",
+          "sha1": "b80cef40673207b98c7c178ac88b62676ff683d1"
+        },
+        {
+          "index": 13,
+          "type": "string",
+          "length": 3,
+          "printable": true,
+          "value": "log",
+          "preview": "log",
+          "hex": "6c6f67",
+          "base64": "bG9n",
+          "sha1": "7babc233de26ab19ead1b9c278128d5c434910ee"
+        },
+        {
+          "index": 14,
+          "type": "string",
+          "length": 3,
+          "printable": true,
+          "value": "log",
+          "preview": "log",
+          "hex": "6c6f67",
+          "base64": "bG9n",
+          "sha1": "7babc233de26ab19ead1b9c278128d5c434910ee"
+        },
+        {
+          "index": 15,
+          "type": "string",
+          "length": 33,
+          "printable": true,
+          "value": "Download URL not found in payload",
+          "preview": "Download URL not found in payload",
+          "hex": "446f776e6c6f61642055524c206e6f7420666f756e6420696e207061796c6f6164",
+          "base64": "RG93bmxvYWQgVVJMIG5vdCBmb3VuZCBpbiBwYXlsb2Fk",
+          "sha1": "fd0d412789c801aacd08a40511931a9e17978edb"
+        },
+        {
+          "index": 16,
+          "type": "string",
+          "length": 20,
+          "printable": true,
+          "value": "loggerDefaultContext",
+          "preview": "loggerDefaultContext",
+          "hex": "6c6f6767657244656661756c74436f6e74657874",
+          "base64": "bG9nZ2VyRGVmYXVsdENvbnRleHQ=",
+          "sha1": "1d76afd4e268e67380922d791e51f3da211cb956"
+        },
+        {
+          "index": 17,
+          "type": "string",
+          "length": 4,
+          "printable": true,
+          "value": "data",
+          "preview": "data",
+          "hex": "64617461",
+          "base64": "ZGF0YQ==",
+          "sha1": "a17c9aaa61e80a1bf71d0d850af4e5baa9800bbd"
+        },
+        {
+          "index": 18,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 19,
+          "type": "string",
+          "length": 3,
+          "printable": true,
+          "value": "url",
+          "preview": "url",
+          "hex": "75726c",
+          "base64": "dXJs",
+          "sha1": "81736358b1645103ae83247b10c5f82af641ddfc"
+        },
+        {
+          "index": 20,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 21,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 22,
+          "type": "string",
+          "length": 6,
+          "printable": true,
+          "value": "status",
+          "preview": "status",
+          "hex": "737461747573",
+          "base64": "c3RhdHVz",
+          "sha1": "48a3661d846478fa991a825ebd10b78671444b5b"
+        },
+        {
+          "index": 23,
+          "type": "string",
+          "length": 2,
+          "printable": true,
+          "value": "ok",
+          "preview": "ok",
+          "hex": "6f6b",
+          "base64": "b2s=",
+          "sha1": "7a85f4764bbd6daf1c3545efbbf0f279a6dc0beb"
+        },
+        {
+          "index": 24,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 25,
+          "type": "string",
+          "length": 16,
+          "printable": true,
+          "value": "customJsonDecode",
+          "preview": "customJsonDecode",
+          "hex": "637573746f6d4a736f6e4465636f6465",
+          "base64": "Y3VzdG9tSnNvbkRlY29kZQ==",
+          "sha1": "9ff01cb13c833e7c2bf58de4c6d154094c8d67ac"
+        },
+        {
+          "index": 26,
+          "type": "string",
+          "length": 16,
+          "printable": true,
+          "value": "customjsondecode",
+          "preview": "customjsondecode",
+          "hex": "637573746f6d6a736f6e6465636f6465",
+          "base64": "Y3VzdG9tanNvbmRlY29kZQ==",
+          "sha1": "319d9fd5d6ca3af58c14c3809ac526ac8f329b13"
+        },
+        {
+          "index": 27,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 28,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 29,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 30,
+          "type": "null",
+          "value": null
+        },
+        {
+          "index": 31,
+          "type": "null",
+          "value": null
+        }
+      ],
+      "opcodes": [
+        {
+          "index": 0,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 64,
+          "opcode_name": "ZEND_RECV_INIT",
+          "handler": 2595713045,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 1,
+            "var": 1,
+            "num": 1,
+            "opline_num": 1,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 0,
+              "printable": true,
+              "value": "",
+              "preview": "",
+              "hex": "",
+              "base64": "",
+              "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+            }
+          },
+          "result": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "constant": 48,
+            "var": 48,
+            "num": 48,
+            "opline_num": 48,
+            "cv_name": "response",
+            "cv_index": 0
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 69,
+          "opcode_xor_decoded": 64,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 1,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 1536293470,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 33,
+            "var": 33,
+            "num": 33,
+            "opline_num": 33,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 1,
+            "var": 1,
+            "num": 1,
+            "opline_num": 1,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            33
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 68,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 2,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 3597039952,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 29,
+            "var": 29,
+            "num": 29,
+            "opline_num": 29,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 2,
+            "var": 2,
+            "num": 2,
+            "opline_num": 2,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            29
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 133,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 3,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 184,
+          "opcode_name": "ZEND_FETCH_THIS",
+          "handler": 1098759427,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 80,
+            "var": 80,
+            "num": 80,
+            "opline_num": 80,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 62,
+          "opcode_xor_decoded": 184,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 4,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 81,
+          "opcode_name": "ZEND_FETCH_DIM_R",
+          "handler": 4272307261,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "constant": 64,
+            "var": 64,
+            "num": 64,
+            "opline_num": 64,
+            "cv_name": "downloadResponsePayload",
+            "cv_index": 1
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 4,
+            "var": 4,
+            "num": 4,
+            "opline_num": 4,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 3,
+              "printable": true,
+              "value": "url",
+              "preview": "url",
+              "hex": "75726c",
+              "base64": "dXJs",
+              "sha1": "81736358b1645103ae83247b10c5f82af641ddfc"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 128,
+            "var": 128,
+            "num": 128,
+            "opline_num": 128,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 200,
+          "opcode_xor_decoded": 81,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 5,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 71,
+          "opcode_name": "ZEND_INIT_ARRAY",
+          "handler": 4234610699,
+          "extended_value": 14,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 128,
+            "var": 128,
+            "num": 128,
+            "opline_num": 128,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 5,
+            "var": 5,
+            "num": 5,
+            "opline_num": 5,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 4,
+              "printable": true,
+              "value": "file",
+              "preview": "file",
+              "hex": "66696c65",
+              "base64": "ZmlsZQ==",
+              "sha1": "971c419dd609331343dee105fffd0f4608dc0bf2"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 144,
+            "var": 144,
+            "num": 144,
+            "opline_num": 144,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 187,
+          "opcode_xor_decoded": 71,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 6,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 184,
+          "opcode_name": "ZEND_FETCH_THIS",
+          "handler": 3946575843,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 160,
+            "var": 160,
+            "num": 160,
+            "opline_num": 160,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 250,
+          "opcode_xor_decoded": 184,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 7,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 82,
+          "opcode_name": "ZEND_FETCH_OBJ_R",
+          "handler": 4290816168,
+          "extended_value": 12,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 160,
+            "var": 160,
+            "num": 160,
+            "opline_num": 160,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 6,
+            "var": 6,
+            "num": 6,
+            "opline_num": 6,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 9,
+              "printable": true,
+              "value": "videoType",
+              "preview": "videoType",
+              "hex": "766964656f54797065",
+              "base64": "dmlkZW9UeXBl",
+              "sha1": "bf42574423dddd49454a9b47d66919ef33139146"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 176,
+            "var": 176,
+            "num": 176,
+            "opline_num": 176,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 208,
+          "opcode_xor_decoded": 82,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 8,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 72,
+          "opcode_name": "ZEND_ADD_ARRAY_ELEMENT",
+          "handler": 1378924314,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 176,
+            "var": 176,
+            "num": 176,
+            "opline_num": 176,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 7,
+            "var": 7,
+            "num": 7,
+            "opline_num": 7,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 4,
+              "printable": true,
+              "value": "type",
+              "preview": "type",
+              "hex": "74797065",
+              "base64": "dHlwZQ==",
+              "sha1": "d0a3e7f81a9885e99049d1cae0336d269d5e47a9"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 144,
+            "var": 144,
+            "num": 144,
+            "opline_num": 144,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 138,
+          "opcode_xor_decoded": 72,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 9,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 72,
+          "opcode_name": "ZEND_ADD_ARRAY_ELEMENT",
+          "handler": 2832027655,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 8,
+            "var": 8,
+            "num": 8,
+            "opline_num": 8,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 8,
+              "printable": true,
+              "value": "Original",
+              "preview": "Original",
+              "hex": "4f726967696e616c",
+              "base64": "T3JpZ2luYWw=",
+              "sha1": "c0a8060f3b1102da85ef318544468f24221e6515"
+            }
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 9,
+            "var": 9,
+            "num": 9,
+            "opline_num": 9,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 5,
+              "printable": true,
+              "value": "label",
+              "preview": "label",
+              "hex": "6c6162656c",
+              "base64": "bGFiZWw=",
+              "sha1": "64c65374dbab6fe3762748196d9d3a9610e2e5a9"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 144,
+            "var": 144,
+            "num": 144,
+            "opline_num": 144,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 139,
+          "opcode_xor_decoded": 72,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 10,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 85,
+          "opcode_name": "ZEND_FETCH_OBJ_W",
+          "handler": 3704535705,
+          "extended_value": 2,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 80,
+            "var": 80,
+            "num": 80,
+            "opline_num": 80,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 3,
+            "var": 3,
+            "num": 3,
+            "opline_num": 3,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 7,
+              "printable": true,
+              "value": "sources",
+              "preview": "sources",
+              "hex": "736f7572636573",
+              "base64": "c291cmNlcw==",
+              "sha1": "bce16dd0260827ecf338c787f1206f77860cacc5"
+            }
+          },
+          "result": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 96,
+            "var": 96,
+            "num": 96,
+            "opline_num": 96,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 12,
+          "opcode_xor_decoded": 85,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 11,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 23,
+          "opcode_name": "ZEND_ASSIGN_DIM",
+          "handler": 2928012702,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 96,
+            "var": 96,
+            "num": 96,
+            "opline_num": 96,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 2,
+            "var": 2,
+            "num": 2,
+            "opline_num": 2,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 231,
+          "opcode_xor_decoded": 23,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 12,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 137,
+          "opcode_name": "ZEND_OP_DATA",
+          "handler": 94269333,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 144,
+            "var": 144,
+            "num": 144,
+            "opline_num": 144,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 126,
+          "opcode_xor_decoded": 137,
+          "resolved_opcode_source": "zend_op_data_pseudo",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 13,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 2914690033,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 40,
+            "var": 40,
+            "num": 40,
+            "opline_num": 40,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 10,
+            "var": 10,
+            "num": 10,
+            "opline_num": 10,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            40
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 178,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 14,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 113,
+          "opcode_name": "ZEND_INIT_STATIC_METHOD_CALL",
+          "handler": 3297597794,
+          "extended_value": 2,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 11,
+            "var": 11,
+            "num": 11,
+            "opline_num": 11,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 23,
+              "printable": true,
+              "value": "GDPlayer\\Logging\\Logger",
+              "preview": "GDPlayer\\Logging\\Logger",
+              "hex": "4744506c617965725c4c6f6767696e675c4c6f67676572",
+              "base64": "R0RQbGF5ZXJcTG9nZ2luZ1xMb2dnZXI=",
+              "sha1": "a4337a6a8e0e8450bb2f0f8ed542f7ffebe5ca95"
+            }
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 13,
+            "var": 13,
+            "num": 13,
+            "opline_num": 13,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 3,
+              "printable": true,
+              "value": "log",
+              "preview": "log",
+              "hex": "6c6f67",
+              "base64": "bG9n",
+              "sha1": "7babc233de26ab19ead1b9c278128d5c434910ee"
+            }
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 24,
+            "var": 24,
+            "num": 24,
+            "opline_num": 24,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 109,
+          "opcode_xor_decoded": 113,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 15,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 116,
+          "opcode_name": "ZEND_SEND_VAL_EX",
+          "handler": 1076405530,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 15,
+            "var": 15,
+            "num": 15,
+            "opline_num": 15,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 33,
+              "printable": true,
+              "value": "Download URL not found in payload",
+              "preview": "Download URL not found in payload",
+              "hex": "446f776e6c6f61642055524c206e6f7420666f756e6420696e207061796c6f6164",
+              "base64": "RG93bmxvYWQgVVJMIG5vdCBmb3VuZCBpbiBwYXlsb2Fk",
+              "sha1": "fd0d412789c801aacd08a40511931a9e17978edb"
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 1,
+            "var": 1,
+            "num": 1,
+            "opline_num": 1,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 48,
+            "var": 48,
+            "num": 48,
+            "opline_num": 48,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 124,
+          "opcode_xor_decoded": 116,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 16,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 184,
+          "opcode_name": "ZEND_FETCH_THIS",
+          "handler": 2955065081,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 192,
+            "var": 192,
+            "num": 192,
+            "opline_num": 192,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 124,
+          "opcode_xor_decoded": 184,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 17,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 82,
+          "opcode_name": "ZEND_FETCH_OBJ_R",
+          "handler": 2353355560,
+          "extended_value": 32,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 192,
+            "var": 192,
+            "num": 192,
+            "opline_num": 192,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 16,
+            "var": 16,
+            "num": 16,
+            "opline_num": 16,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 20,
+              "printable": true,
+              "value": "loggerDefaultContext",
+              "preview": "loggerDefaultContext",
+              "hex": "6c6f6767657244656661756c74436f6e74657874",
+              "base64": "bG9nZ2VyRGVmYXVsdENvbnRleHQ=",
+              "sha1": "1d76afd4e268e67380922d791e51f3da211cb956"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 208,
+            "var": 208,
+            "num": 208,
+            "opline_num": 208,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 5,
+          "opcode_xor_decoded": 82,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 18,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 71,
+          "opcode_name": "ZEND_INIT_ARRAY",
+          "handler": 3742089697,
+          "extended_value": 2,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 224,
+            "var": 224,
+            "num": 224,
+            "opline_num": 224,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 16,
+          "opcode_xor_decoded": 71,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 19,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 147,
+          "opcode_name": "ZEND_ADD_ARRAY_UNPACK",
+          "handler": 2697071954,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 208,
+            "var": 208,
+            "num": 208,
+            "opline_num": 208,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 224,
+            "var": 224,
+            "num": 224,
+            "opline_num": 224,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 172,
+          "opcode_xor_decoded": 147,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 20,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 72,
+          "opcode_name": "ZEND_ADD_ARRAY_ELEMENT",
+          "handler": 3183860633,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "constant": 64,
+            "var": 64,
+            "num": 64,
+            "opline_num": 64,
+            "cv_name": "downloadResponsePayload",
+            "cv_index": 1
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 17,
+            "var": 17,
+            "num": 17,
+            "opline_num": 17,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 4,
+              "printable": true,
+              "value": "data",
+              "preview": "data",
+              "hex": "64617461",
+              "base64": "ZGF0YQ==",
+              "sha1": "a17c9aaa61e80a1bf71d0d850af4e5baa9800bbd"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 224,
+            "var": 224,
+            "num": 224,
+            "opline_num": 224,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 173,
+          "opcode_xor_decoded": 72,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 21,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 116,
+          "opcode_name": "ZEND_SEND_VAL_EX",
+          "handler": 2838642537,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 224,
+            "var": 224,
+            "num": 224,
+            "opline_num": 224,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 2,
+            "var": 2,
+            "num": 2,
+            "opline_num": 2,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 64,
+            "var": 64,
+            "num": 64,
+            "opline_num": 64,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 60,
+          "opcode_xor_decoded": 116,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 22,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 60,
+          "opcode_name": "ZEND_DO_FCALL",
+          "handler": 2339728922,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 10,
+            "var": 10,
+            "num": 10,
+            "opline_num": 10,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": true,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 243,
+          "opcode_xor_decoded": 60,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 23,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 3130327878,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 38,
+            "var": 38,
+            "num": 38,
+            "opline_num": 38,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 18,
+            "var": 18,
+            "num": 18,
+            "opline_num": 18,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            38
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 210,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 24,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 115,
+          "opcode_name": "ZEND_ISSET_ISEMPTY_DIM_OBJ",
+          "handler": 2726477025,
+          "extended_value": 1,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "constant": 64,
+            "var": 64,
+            "num": 64,
+            "opline_num": 64,
+            "cv_name": "downloadResponsePayload",
+            "cv_index": 1
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 19,
+            "var": 19,
+            "num": 19,
+            "opline_num": 19,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 3,
+              "printable": true,
+              "value": "url",
+              "preview": "url",
+              "hex": "75726c",
+              "base64": "dXJs",
+              "sha1": "81736358b1645103ae83247b10c5f82af641ddfc"
+            }
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 256,
+            "var": 256,
+            "num": 256,
+            "opline_num": 256,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 220,
+          "opcode_xor_decoded": 115,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 25,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 14,
+          "opcode_name": "ZEND_BOOL_NOT",
+          "handler": 837432421,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 256,
+            "var": 256,
+            "num": 256,
+            "opline_num": 256,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 272,
+            "var": 272,
+            "num": 272,
+            "opline_num": 272,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 56,
+          "opcode_xor_decoded": 14,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 26,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 43,
+          "opcode_name": "ZEND_JMPZ",
+          "handler": 2417331172,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "constant": 272,
+            "var": 272,
+            "num": 272,
+            "opline_num": 272,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 28,
+            "var": 28,
+            "num": 28,
+            "opline_num": 28,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            28
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 77,
+          "opcode_xor_decoded": 43,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 27,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 736232656,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 2,
+            "var": 2,
+            "num": 2,
+            "opline_num": 2,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 20,
+            "var": 20,
+            "num": 20,
+            "opline_num": 20,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            2
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 111,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 28,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 3569009385,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 14,
+            "var": 14,
+            "num": 14,
+            "opline_num": 14,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 21,
+            "var": 21,
+            "num": 21,
+            "opline_num": 21,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            14
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 27,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 29,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 184,
+          "opcode_name": "ZEND_FETCH_THIS",
+          "handler": 2566944272,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 288,
+            "var": 288,
+            "num": 288,
+            "opline_num": 288,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 252,
+          "opcode_xor_decoded": 184,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 30,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 24,
+          "opcode_name": "ZEND_ASSIGN_OBJ",
+          "handler": 3962869126,
+          "extended_value": 44,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 288,
+            "var": 288,
+            "num": 288,
+            "opline_num": 288,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 22,
+            "var": 22,
+            "num": 22,
+            "opline_num": 22,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 6,
+              "printable": true,
+              "value": "status",
+              "preview": "status",
+              "hex": "737461747573",
+              "base64": "c3RhdHVz",
+              "sha1": "48a3661d846478fa991a825ebd10b78671444b5b"
+            }
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 14,
+            "var": 14,
+            "num": 14,
+            "opline_num": 14,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 242,
+          "opcode_xor_decoded": 24,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 31,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 137,
+          "opcode_name": "ZEND_OP_DATA",
+          "handler": 1540910537,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 23,
+            "var": 23,
+            "num": 23,
+            "opline_num": 23,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 2,
+              "printable": true,
+              "value": "ok",
+              "preview": "ok",
+              "hex": "6f6b",
+              "base64": "b2s=",
+              "sha1": "7a85f4764bbd6daf1c3545efbbf0f279a6dc0beb"
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 12,
+          "opcode_xor_decoded": 137,
+          "resolved_opcode_source": "zend_op_data_pseudo",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 32,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 3710842837,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 3,
+            "var": 3,
+            "num": 3,
+            "opline_num": 3,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 24,
+            "var": 24,
+            "num": 24,
+            "opline_num": 24,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            3
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 64,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 33,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 59,
+          "opcode_name": "ZEND_INIT_FCALL_BY_NAME",
+          "handler": 2456735136,
+          "extended_value": 1,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 25,
+            "var": 25,
+            "num": 25,
+            "opline_num": 25,
+            "cv_name": null,
+            "literal": {
+              "type": "string",
+              "length": 16,
+              "printable": true,
+              "value": "customJsonDecode",
+              "preview": "customJsonDecode",
+              "hex": "637573746f6d4a736f6e4465636f6465",
+              "base64": "Y3VzdG9tSnNvbkRlY29kZQ==",
+              "sha1": "9ff01cb13c833e7c2bf58de4c6d154094c8d67ac"
+            },
+            "resolved_literal": {
+              "type": "string",
+              "length": 16,
+              "printable": true,
+              "value": "customJsonDecode",
+              "preview": "customJsonDecode",
+              "hex": "637573746f6d4a736f6e4465636f6465",
+              "base64": "Y3VzdG9tSnNvbkRlY29kZQ==",
+              "sha1": "9ff01cb13c833e7c2bf58de4c6d154094c8d67ac"
+            },
+            "resolved_literal_source": "function_table"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 56,
+            "var": 56,
+            "num": 56,
+            "opline_num": 56,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": true,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 171,
+          "opcode_xor_decoded": 59,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0,
+          "resolved_function_name": "customJsonDecode",
+          "resolved_function_type": 1,
+          "resolved_function_name_source": "function_table",
+          "call_name": "customJsonDecode"
+        },
+        {
+          "index": 34,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 66,
+          "opcode_name": "ZEND_SEND_VAR_EX",
+          "handler": 3485806367,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "constant": 48,
+            "var": 48,
+            "num": 48,
+            "opline_num": 48,
+            "cv_name": "response",
+            "cv_index": 0
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 1,
+            "var": 1,
+            "num": 1,
+            "opline_num": 1,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 48,
+            "var": 48,
+            "num": 48,
+            "opline_num": 48,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 35,
+          "opcode_xor_decoded": 66,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 35,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 131,
+          "opcode_name": "ZEND_DO_FCALL_BY_NAME",
+          "handler": 653135575,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 320,
+            "var": 320,
+            "num": 320,
+            "opline_num": 320,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": true,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 141,
+          "opcode_xor_decoded": 131,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 36,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 22,
+          "opcode_name": "ZEND_ASSIGN",
+          "handler": 3752543198,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "constant": 64,
+            "var": 64,
+            "num": 64,
+            "opline_num": 64,
+            "cv_name": "downloadResponsePayload",
+            "cv_index": 1
+          },
+          "op2": {
+            "type": 4,
+            "type_name": "IS_VAR",
+            "constant": 320,
+            "var": 320,
+            "num": 320,
+            "opline_num": 320,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 16,
+            "var": 16,
+            "num": 16,
+            "opline_num": 16,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 95,
+          "opcode_xor_decoded": 22,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 37,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 1126932002,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 24,
+            "var": 24,
+            "num": 24,
+            "opline_num": 24,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 27,
+            "var": 27,
+            "num": 27,
+            "opline_num": 27,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            24
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 111,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 38,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 1477726710,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 40,
+            "var": 40,
+            "num": 40,
+            "opline_num": 40,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 28,
+            "var": 28,
+            "num": 28,
+            "opline_num": 28,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            40
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 183,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 39,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 3804526442,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 2,
+            "var": 2,
+            "num": 2,
+            "opline_num": 2,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 29,
+            "var": 29,
+            "num": 29,
+            "opline_num": 29,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            2
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 140,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 40,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 42,
+          "opcode_name": "ZEND_JMP",
+          "handler": 37055633,
+          "extended_value": 0,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 41,
+            "var": 41,
+            "num": 41,
+            "opline_num": 41,
+            "cv_name": null
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 30,
+            "var": 30,
+            "num": 30,
+            "opline_num": 30,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [
+            41
+          ],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 88,
+          "opcode_xor_decoded": 42,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        },
+        {
+          "index": 41,
+          "line": 0,
+          "lineno_raw": null,
+          "opcode": 62,
+          "opcode_name": "ZEND_RETURN",
+          "handler": 2660572285,
+          "extended_value": -1,
+          "extended_value_decoded": null,
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "constant": 31,
+            "var": 31,
+            "num": 31,
+            "opline_num": 31,
+            "cv_name": null,
+            "literal": {
+              "type": "null",
+              "value": null
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED",
+            "constant": 0,
+            "var": 0,
+            "num": 0,
+            "opline_num": 0,
+            "cv_name": null
+          },
+          "jump_targets": [],
+          "is_call": false,
+          "is_include_or_eval": false,
+          "is_lambda_declare": false,
+          "opcode_raw": 219,
+          "opcode_xor_decoded": 62,
+          "resolved_opcode_source": "zend_vm_handler",
+          "ic_meta_flags": 36039,
+          "ic_operand_flags": 0
+        }
+      ],
+      "cfg": {
+        "blocks": [],
+        "edges": []
+      },
+      "analysis": {
+        "opcode_stats": [],
+        "literal_xrefs": [],
+        "sites": {
+          "calls": [],
+          "include_eval": [],
+          "lambda_declarations": [],
+          "assignments": [],
+          "returns": []
+        }
+      },
+      "closure_report": {
+        "declared_lambdas": 0,
+        "dumped_closure_op_arrays": 0,
+        "missing": 0,
+        "num_dynamic_func_defs": 0,
+        "materialized_closures": 0
+      }
+    }
+  },
+  "function_index": {},
+  "closure_index": {},
+  "class_index": {}
+}

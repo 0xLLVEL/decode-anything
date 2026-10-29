@@ -1,11 +1,15 @@
 # Bytecode & Python Caches
 __pycache__/
+*pycache*/
 *.py[cod]
 *$py.class
 *.pytest_cache/
 .pytest_cache/
 .coverage
 htmlcov/
+.freebuff/
+.freebuf/
+*freebuf*
 
 # Temporary dumps and intermediate files
 *.icdump.json
@@ -24,6 +28,10 @@ tmp/
 *.reconstructed.php
 *.reconstructed.*
 decoded_*/
+reports/
+
+# SourceGuardian loader keys (extracted, never committed)
+sg_keys.py
 
 
 # Virtual Environments

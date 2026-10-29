@@ -33,7 +33,8 @@ def optimize(node: php.PhpFile) -> php.PhpFile:
 
 def _optimize_stmts(stmts: list[php.Stmt]) -> list[php.Stmt]:
     stmts = _drop_redundant_gotos(stmts)
-    return [_optimize_stmt(stmt) for stmt in stmts]
+    stmts = [_optimize_stmt(stmt) for stmt in stmts]
+    return _drop_dead_code_after_terminal(stmts)
 
 
 def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
@@ -79,13 +80,39 @@ def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
         if stmt.finally_body is not None:
             stmt.finally_body = _optimize_stmts(stmt.finally_body)
     elif isinstance(stmt, php.FunctionDecl):
-        stmt.body = _prune_unreferenced_labels(_drop_trailing_bare_return(_optimize_stmts(stmt.body)))
+        is_void_or_ctor = (stmt.name == "__construct") or (
+            bool(stmt.return_type and stmt.return_type.lower() == "void")
+        )
+        body = _optimize_stmts(stmt.body)
+        if is_void_or_ctor:
+            body = _normalize_void_returns(body)
+        stmt.body = _prune_unreferenced_labels(
+            _drop_trailing_bare_return(
+                body,
+                return_type=stmt.return_type,
+                return_nullable=stmt.return_nullable,
+                is_constructor=(stmt.name == "__construct"),
+            )
+        )
         for param in stmt.params:
             if param.default is not None:
                 param.default = _optimize_expr(param.default)
     elif isinstance(stmt, php.ClassDecl):
         for method in stmt.methods:
-            method.body = _prune_unreferenced_labels(_drop_trailing_bare_return(_optimize_stmts(method.body)))
+            is_void_or_ctor = (method.name == "__construct") or (
+                bool(method.return_type and method.return_type.lower() == "void")
+            )
+            body = _optimize_stmts(method.body)
+            if is_void_or_ctor:
+                body = _normalize_void_returns(body)
+            method.body = _prune_unreferenced_labels(
+                _drop_trailing_bare_return(
+                    body,
+                    return_type=method.return_type,
+                    return_nullable=method.return_nullable,
+                    is_constructor=(method.name == "__construct"),
+                )
+            )
             for param in method.params:
                 if param.default is not None:
                     param.default = _optimize_expr(param.default)
@@ -110,9 +137,28 @@ def _optimize_expr(expr: php.Expr) -> php.Expr:
             inner = _boolean_context(expr.operand)
             if isinstance(inner, php.UnaryOp) and inner.op == "!":
                 return _boolean_context(inner.operand)
-            if isinstance(inner, php.BinaryOp) and inner.op in _INVERTED_COMPARISON:
-                inner.op = _INVERTED_COMPARISON[inner.op]
-                return inner
+            if isinstance(inner, php.BinaryOp):
+                if inner.op in _INVERTED_COMPARISON:
+                    inner.op = _INVERTED_COMPARISON[inner.op]
+                    return inner
+                if inner.op == "&&" and (
+                    (isinstance(inner.left, php.UnaryOp) and inner.left.op == "!")
+                    or (isinstance(inner.right, php.UnaryOp) and inner.right.op == "!")
+                ):
+                    return php.BinaryOp(
+                        op="||",
+                        left=_optimize_expr(_negate(inner.left)),
+                        right=_optimize_expr(_negate(inner.right)),
+                    )
+                if inner.op == "||" and (
+                    isinstance(inner.left, php.UnaryOp) and inner.left.op == "!"
+                    and isinstance(inner.right, php.UnaryOp) and inner.right.op == "!"
+                ):
+                    return php.BinaryOp(
+                        op="&&",
+                        left=_optimize_expr(_negate(inner.left)),
+                        right=_optimize_expr(_negate(inner.right)),
+                    )
             expr.operand = inner
         return expr
     if isinstance(expr, php.Cast):
@@ -212,14 +258,110 @@ def _drop_trailing_continue(stmts: list[php.Stmt]) -> list[php.Stmt]:
     return stmts
 
 
-def _drop_trailing_bare_return(stmts: list[php.Stmt]) -> list[php.Stmt]:
+def _stmt_terminates(stmt: php.Stmt) -> bool:
+    """Return True if execution unconditionally terminates after this statement."""
+    if isinstance(stmt, (php.ReturnStmt, php.ThrowStmt)):
+        return True
+    if isinstance(stmt, php.ExprStmt) and isinstance(stmt.expr, php.ExitExpr):
+        return True
+    if isinstance(stmt, php.TryStmt):
+        if not (stmt.body and _stmt_terminates(stmt.body[-1])):
+            return False
+        for c in stmt.catches:
+            if not (c.body and _stmt_terminates(c.body[-1])):
+                return False
+        return True
+    if isinstance(stmt, php.IfStmt):
+        if not (stmt.then and _stmt_terminates(stmt.then[-1])):
+            return False
+        if not (stmt.orelse and _stmt_terminates(stmt.orelse[-1])):
+            return False
+        for _, b in stmt.elifs:
+            if not (b and _stmt_terminates(b[-1])):
+                return False
+        return True
+    return False
+
+
+def _drop_dead_code_after_terminal(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    """Prune unreachable statements that follow an unconditional terminal statement.
+
+    If any following statement is a LabelStmt, execution can jump to it via goto,
+    so subsequent statements are not dead code.
+    """
+    out: list[php.Stmt] = []
+    for idx, stmt in enumerate(stmts):
+        out.append(stmt)
+        if _stmt_terminates(stmt):
+            remaining = stmts[idx + 1 :]
+            has_label = any(isinstance(s, php.LabelStmt) for s in remaining)
+            if not has_label:
+                break
+    return out
+
+
+def _normalize_void_returns(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    """In constructor and : void functions, convert `return null;` to bare `return;`."""
+    for s in stmts:
+        if isinstance(s, php.ReturnStmt):
+            if s.value is None or (isinstance(s.value, php.Literal) and s.value.value is None):
+                s.value = None
+        elif isinstance(s, php.IfStmt):
+            _normalize_void_returns(s.then)
+            for _, b in s.elifs:
+                _normalize_void_returns(b)
+            _normalize_void_returns(s.orelse)
+        elif isinstance(s, (php.WhileStmt, php.DoWhileStmt, php.ForeachStmt)):
+            _normalize_void_returns(s.body)
+        elif isinstance(s, php.TryStmt):
+            _normalize_void_returns(s.body)
+            for c in s.catches:
+                _normalize_void_returns(c.body)
+            if s.finally_body:
+                _normalize_void_returns(s.finally_body)
+        elif isinstance(s, php.SwitchStmt):
+            for c in s.cases:
+                _normalize_void_returns(c.body)
+    return stmts
+
+
+def _drop_trailing_bare_return(
+    stmts: list[php.Stmt],
+    return_type: str | None = None,
+    return_nullable: bool = False,
+    is_constructor: bool = False,
+) -> list[php.Stmt]:
     """The compiler appends an implicit `return null;` or `return;` to functions."""
-    if stmts and isinstance(stmts[-1], php.ReturnStmt):
+    stmts = _drop_dead_code_after_terminal(stmts)
+    if not stmts:
+        return stmts
+
+    if isinstance(stmts[-1], php.ReturnStmt):
         val = stmts[-1].value
         is_none_val = val is None or (isinstance(val, php.Literal) and val.value is None)
         if is_none_val:
-            if len(stmts) > 1 and isinstance(stmts[-2], (php.ReturnStmt, php.ThrowStmt)):
+            if len(stmts) > 1 and _stmt_terminates(stmts[-2]):
                 return stmts[:-1]
+            if is_constructor:
+                return stmts[:-1]
+            if return_type and not return_nullable:
+                if len(stmts) > 1 and _stmt_terminates(stmts[-2]):
+                    return stmts[:-1]
+                rtype = return_type.lower()
+                if rtype == "array":
+                    stmts[-1].value = php.ArrayLiteral()
+                    return stmts
+                elif rtype == "string":
+                    stmts[-1].value = php.Literal(value="")
+                    return stmts
+                elif rtype == "bool":
+                    stmts[-1].value = php.Literal(value=False)
+                    return stmts
+                elif rtype in ("int", "float"):
+                    stmts[-1].value = php.Literal(value=0)
+                    return stmts
+                elif rtype == "void":
+                    return stmts[:-1]
             if val is None:
                 return stmts[:-1]
     return stmts

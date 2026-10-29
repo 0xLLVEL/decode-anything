@@ -398,19 +398,105 @@ class LoaderHandlerTables:
     TYPE_DIMENSION_TABLE_84= 0x100C3C90
     GLOBAL_FEATURE_WORD_84 = 0x100B3714  # zend_observer_fcall_op_array_extension
 
+    # 64-bit loaders shipped in this repo use image base 0x180000000 and a
+    # different layout. Addresses below are RVAs so they follow the PE image
+    # base instead of assuming the old 32-bit 0x10000000 base.
+    TABLES_BY_VERSION_X64_RVA: "dict[int, dict]" = {
+        81: {
+            "VARIANT_TABLES": (
+                (0x0F54A0, 0x0C53E0),
+                (0x17C490, 0x1054A0),
+                (0x0B5000, 0x0E54A0),
+                (0x18C510, 0x1457A0),
+                (0x1154A0, 0x0D53E0),
+                (0x1254E0, 0x16C3F0),
+                (0x1355A0, 0x1557A0),
+            ),
+            "OPCODE_HANDLER_META":   0x0C5000,
+            "OPCODE_META_ID":        0x1455E0,
+            "TYPE_DIMENSION_TABLE":  0x0C5330,
+            "GLOBAL_FEATURE_WORD":   0x0B4DA0,
+            "last_opcode":           202,
+        },
+        82: {
+            "VARIANT_TABLES": (
+                (0x1045C0, 0x0D4500),
+                (0x18B5B0, 0x1145C0),
+                (0x0C4050, 0x0F45C0),
+                (0x19B630, 0x1548C0),
+                (0x1245C0, 0x0E4500),
+                (0x134600, 0x17B500),
+                (0x1446C0, 0x1648C0),
+            ),
+            "OPCODE_HANDLER_META":   0x0D4050,
+            "OPCODE_META_ID":        0x154700,
+            "TYPE_DIMENSION_TABLE":  0x0D4450,
+            "GLOBAL_FEATURE_WORD":   0x0C3DB8,
+            "last_opcode":           202,
+        },
+        83: {
+            "VARIANT_TABLES": (
+                (0x1075F0, 0x0D7530),
+                (0x18E6C0, 0x1175F0),
+                (0x0C7080, 0x0F75F0),
+                (0x19E740, 0x157900),
+                (0x1275F0, 0x0E7530),
+                (0x137630, 0x17E610),
+                (0x1476F0, 0x167900),
+            ),
+            "OPCODE_HANDLER_META":   0x0D7080,
+            "OPCODE_META_ID":        0x157730,
+            "TYPE_DIMENSION_TABLE":  0x0D7480,
+            "GLOBAL_FEATURE_WORD":   0x0C6DE8,
+            "last_opcode":           203,
+        },
+        84: {
+            "VARIANT_TABLES": (
+                (0x10D670, 0x0DD5B0),
+                (0x194810, 0x11D670),
+                (0x0CD100, 0x0FD670),
+                (0x1A48D0, 0x15D9F0),
+                (0x12D670, 0x0ED5B0),
+                (0x13D6B0, 0x184750),
+                (0x14D7A0, 0x16D9F0),
+            ),
+            "OPCODE_HANDLER_META":   0x0DD100,
+            "OPCODE_META_ID":        0x15D7E0,
+            "TYPE_DIMENSION_TABLE":  0x0DD500,
+            "GLOBAL_FEATURE_WORD":   0x0CCDE8,
+            "last_opcode":           209,
+        },
+    }
+
     TABLES_BY_VERSION: "dict[int, dict]" = {}  # populated after class definition
 
     def __init__(self, image: bytes, image_base: int, php_version: int = 81):
         self.image = image
         self.image_base = image_base
-        t = self.TABLES_BY_VERSION.get(php_version, {})
-        self.VARIANT_TABLES       = t.get("VARIANT_TABLES",        self.__class__.VARIANT_TABLES)
-        self.OPCODE_HANDLER_META  = t.get("OPCODE_HANDLER_META",   self.__class__.OPCODE_HANDLER_META)
-        self.OPCODE_META_ID       = t.get("OPCODE_META_ID",        self.__class__.OPCODE_META_ID)
-        self.TYPE_DIMENSION_TABLE = t.get("TYPE_DIMENSION_TABLE",  self.__class__.TYPE_DIMENSION_TABLE)
-        self.GLOBAL_FEATURE_WORD  = t.get("GLOBAL_FEATURE_WORD",   self.__class__.GLOBAL_FEATURE_WORD)
-        # PHP 8.1/8.2 use opcodes 0-202 unless a version profile overrides it.
-        self.last_opcode          = t.get("last_opcode", 202)
+        if image_base == 0x180000000:
+            profile = self.TABLES_BY_VERSION_X64_RVA.get(php_version)
+            if profile is None:
+                raise ParseError(
+                    f"no 64-bit handler tables for PHP {php_version // 10}.{php_version % 10}"
+                )
+            self.VARIANT_TABLES = tuple(
+                (image_base + table_a, image_base + table_b)
+                for table_a, table_b in profile["VARIANT_TABLES"]
+            )
+            self.OPCODE_HANDLER_META = image_base + profile["OPCODE_HANDLER_META"]
+            self.OPCODE_META_ID = image_base + profile["OPCODE_META_ID"]
+            self.TYPE_DIMENSION_TABLE = image_base + profile["TYPE_DIMENSION_TABLE"]
+            self.GLOBAL_FEATURE_WORD = image_base + profile["GLOBAL_FEATURE_WORD"]
+            self.last_opcode = profile["last_opcode"]
+        else:
+            t = self.TABLES_BY_VERSION.get(php_version, {})
+            self.VARIANT_TABLES       = t.get("VARIANT_TABLES",        self.__class__.VARIANT_TABLES)
+            self.OPCODE_HANDLER_META  = t.get("OPCODE_HANDLER_META",   self.__class__.OPCODE_HANDLER_META)
+            self.OPCODE_META_ID       = t.get("OPCODE_META_ID",        self.__class__.OPCODE_META_ID)
+            self.TYPE_DIMENSION_TABLE = t.get("TYPE_DIMENSION_TABLE",  self.__class__.TYPE_DIMENSION_TABLE)
+            self.GLOBAL_FEATURE_WORD  = t.get("GLOBAL_FEATURE_WORD",   self.__class__.GLOBAL_FEATURE_WORD)
+            # PHP 8.1/8.2 use opcodes 0-202 unless a version profile overrides it.
+            self.last_opcode          = t.get("last_opcode", 202)
         self.global_feature_word  = self.u32(self.GLOBAL_FEATURE_WORD)
 
     @classmethod
@@ -630,10 +716,35 @@ class LoaderInternedStringResolver:
     STRING_XOR_KEY_84 = 0x101978B0
     STRING_POINTER_TABLE_84 = 0x101978E8
 
-    def __init__(self, image: bytes, image_base: int, php_version: int = 81):
+    # 64-bit loader RVAs (image base 0x180000000). The 16-byte XOR key is
+    # unchanged; pointer tables use 8-byte entries instead of 4-byte entries.
+    STRING_TABLES_X64_RVA: "dict[int, tuple[int, int]]" = {
+        81: (0x19C6C0, 0x19C6F0),
+        82: (0x1AB7D0, 0x1AB810),
+        83: (0x1AE8E0, 0x1AE910),
+        84: (0x1B4A90, 0x1B4AD0),
+    }
+
+    def __init__(
+        self,
+        image: bytes,
+        image_base: int,
+        php_version: int = 81,
+        pointer_size: int = 4,
+    ):
         self.image = image
         self.image_base = image_base
-        if php_version == 84:
+        self.pointer_size = pointer_size
+        if pointer_size == 8:
+            offsets = self.STRING_TABLES_X64_RVA.get(php_version)
+            if offsets is None:
+                raise ParseError(
+                    f"no 64-bit string tables for PHP {php_version // 10}.{php_version % 10}"
+                )
+            key_rva, table_rva = offsets
+            key_addr = image_base + key_rva
+            self._table_addr = image_base + table_rva
+        elif php_version == 84:
             key_addr = self.STRING_XOR_KEY_84
             self._table_addr = self.STRING_POINTER_TABLE_84
         elif php_version == 83:
@@ -661,6 +772,7 @@ class LoaderInternedStringResolver:
             image=pe.get_memory_mapped_image(),
             image_base=pe.OPTIONAL_HEADER.ImageBase,
             php_version=php_version,
+            pointer_size=8 if pe.FILE_HEADER.Machine == 0x8664 else 4,
         )
 
     def _offset(self, address: int, size: int) -> int:
@@ -679,12 +791,19 @@ class LoaderInternedStringResolver:
     def u32(self, address: int) -> int:
         return struct.unpack("<I", self.read(address, 4))[0]
 
+    def read_pointer(self, address: int) -> int:
+        if self.pointer_size == 8:
+            return struct.unpack("<Q", self.read(address, 8))[0]
+        return self.u32(address)
+
     def decode_ref(self, signed_offset: int, expected_length: int | None = None) -> str | None:
         """Resolve offsets handled by sub_100906D0's static table branch."""
 
         if signed_offset >= -2:
             return None
-        pointer = self.u32(self._table_addr + 4 * (-signed_offset))
+        pointer = self.read_pointer(
+            self._table_addr + self.pointer_size * (-signed_offset)
+        )
         if pointer == 0:
             return None
         length = self.u8(pointer)

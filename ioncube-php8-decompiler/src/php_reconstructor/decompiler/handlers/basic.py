@@ -254,18 +254,28 @@ def handle_match(ctx: DecompileContext, op: Opcode) -> int | None:
     from . import get_handler
     from ..context import literal_to_expr
 
+    op_count = len(ctx.ops)
+    last_index = op_count - 1
+
     for idx, off in enumerate(sorted_offsets):
         cond_keys = grouped[off]
         start = op.index + off // bytes_per_op
+        if start > last_index:
+            ctx.warn(
+                f"op {op.index}: ZEND_MATCH arm offset {off} outside op array; "
+                "using the final opcode"
+            )
+            start = last_index
         if idx + 1 < len(sorted_offsets):
             next_off = sorted_offsets[idx + 1]
             end = op.index + next_off // bytes_per_op - 1
         else:
-            end = len(ctx.ops) - 1
-            for j in range(start, len(ctx.ops)):
+            end = last_index
+            for j in range(start, op_count):
                 if ctx.ops[j].name == "ZEND_JMP":
                     end = j
                     break
+        end = max(start, min(end, last_index))
 
         for j in range(start, end):
             sub_op = ctx.ops[j]
@@ -297,4 +307,4 @@ def handle_match(ctx: DecompileContext, op: Opcode) -> int | None:
 
     if end_target is not None and end_target > op.index:
         return end_target - op.index
-    return None
+    return max(1, end - op.index)

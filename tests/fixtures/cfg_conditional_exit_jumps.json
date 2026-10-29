@@ -1,0 +1,332 @@
+{
+  "format": "icdump-ir-v1",
+  "source_file": "cfg_conditional_exit_jumps.php",
+  "entry": "main",
+  "op_arrays": {
+    "function:657869745f6775617264": {
+      "kind": "function",
+      "meta": {},
+      "function_name": {
+        "type": "string",
+        "length": 10,
+        "printable": true,
+        "value": "exit_guard"
+      },
+      "vars": {
+        "type": "array",
+        "value": {
+          "0": "a",
+          "1": "b",
+          "2": "again"
+        }
+      },
+      "arg_info": [
+        {
+          "index": 0,
+          "name": "a",
+          "type_name": null,
+          "pass_by_reference": false,
+          "allow_null": false,
+          "is_variadic": false,
+          "has_default": false
+        },
+        {
+          "index": 1,
+          "name": "b",
+          "type_name": null,
+          "pass_by_reference": false,
+          "allow_null": false,
+          "is_variadic": false,
+          "has_default": false
+        },
+        {
+          "index": 2,
+          "name": "again",
+          "type_name": null,
+          "pass_by_reference": false,
+          "allow_null": false,
+          "is_variadic": false,
+          "has_default": false
+        }
+      ],
+      "num_args": 3,
+      "required_num_args": 3,
+      "fn_flags_decoded": {},
+      "literals": [],
+      "try_catch": [],
+      "opcodes": [
+        {
+          "index": 0,
+          "opcode_name": "ZEND_RECV",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 48,
+            "cv_name": "a",
+            "cv_index": 0
+          },
+          "jump_targets": []
+        },
+        {
+          "index": 1,
+          "opcode_name": "ZEND_RECV",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 64,
+            "cv_name": "b",
+            "cv_index": 1
+          },
+          "jump_targets": []
+        },
+        {
+          "index": 2,
+          "opcode_name": "ZEND_RECV",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 80,
+            "cv_name": "again",
+            "cv_index": 2
+          },
+          "jump_targets": []
+        },
+        {
+          "index": 3,
+          "opcode_name": "ZEND_JMPZ",
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 80,
+            "cv_name": "again",
+            "cv_index": 2
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            10
+          ]
+        },
+        {
+          "index": 4,
+          "opcode_name": "ZEND_JMPZ",
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 48,
+            "cv_name": "a",
+            "cv_index": 0
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            6
+          ]
+        },
+        {
+          "index": 5,
+          "opcode_name": "ZEND_JMP",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            10
+          ]
+        },
+        {
+          "index": 6,
+          "opcode_name": "ZEND_JMPZ",
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 64,
+            "cv_name": "b",
+            "cv_index": 1
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            8
+          ]
+        },
+        {
+          "index": 7,
+          "opcode_name": "ZEND_JMP",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            3
+          ]
+        },
+        {
+          "index": 8,
+          "opcode_name": "ZEND_ECHO",
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "literal": {
+              "type": "string",
+              "length": 2,
+              "printable": true,
+              "value": "ab"
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": []
+        },
+        {
+          "index": 9,
+          "opcode_name": "ZEND_JMP",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            3
+          ]
+        },
+        {
+          "index": 10,
+          "opcode_name": "ZEND_RETURN",
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "literal": {
+              "type": "null",
+              "value": null
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": []
+        }
+      ]
+    },
+    "main": {
+      "kind": "main",
+      "meta": {},
+      "function_name": {
+        "type": "null",
+        "value": null
+      },
+      "vars": {
+        "type": "array",
+        "value": {}
+      },
+      "arg_info": [],
+      "num_args": 0,
+      "required_num_args": 0,
+      "fn_flags_decoded": {},
+      "literals": [],
+      "try_catch": [],
+      "opcodes": [
+        {
+          "index": 0,
+          "opcode_name": "ZEND_RETURN",
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "literal": {
+              "type": "integer",
+              "value": 1
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": []
+        }
+      ]
+    }
+  },
+  "function_index": {},
+  "closure_index": {},
+  "class_index": {}
+}

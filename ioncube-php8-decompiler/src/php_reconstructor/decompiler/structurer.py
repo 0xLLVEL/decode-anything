@@ -168,6 +168,7 @@ class RangeDecompiler:
             back is not None
             and back <= i
             and target - 2 >= i
+            and not self._starts_nop_merge_chain(back)
             and self._loop_exit_stmt(back) is None
         ):
             self.ctx.loop_stack.append(
@@ -839,6 +840,24 @@ class RangeDecompiler:
             if op.name == "ZEND_JMP" and op.jump_targets:
                 return op.jump_targets[0]
         return None
+
+    def _starts_nop_merge_chain(self, index: int) -> bool:
+        """True when a backward jump lands on a NOP gap closed by another JMP.
+
+        ``NOP; JMP`` blocks are permuted CFG merge points, not loop latches.
+        Treating their target as the loop condition start produced empty
+        ``while`` statements whose body had already been emitted.
+        """
+        if not (0 <= index < len(self.ops)) or self.ops[index].name != "ZEND_NOP":
+            return False
+        cursor = index
+        while cursor < len(self.ops) and self.ops[cursor].name == "ZEND_NOP":
+            cursor += 1
+        return (
+            cursor < len(self.ops)
+            and self.ops[cursor].name == "ZEND_JMP"
+            and bool(self.ops[cursor].jump_targets)
+        )
 
 
 def _describe(op: Opcode) -> str:

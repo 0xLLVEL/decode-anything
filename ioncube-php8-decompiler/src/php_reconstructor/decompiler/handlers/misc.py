@@ -25,7 +25,7 @@ def handle_return(ctx: DecompileContext, op: Opcode) -> None:
         is_void = ctx.op_array.return_type in ("void", "never")
         is_last = op.index == len(ctx.op_array.opcodes) - 1
         is_implicit = op.extended_value == -1 or is_last
-        if is_void or (is_implicit and not ctx.op_array.return_type):
+        if is_void or is_implicit:
             ctx.emit(op.index, php.ReturnStmt(value=None))
             return
         ctx.emit(op.index, php.ReturnStmt(value=php.Literal(value=None)))

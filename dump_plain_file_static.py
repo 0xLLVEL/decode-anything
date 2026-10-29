@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import struct
@@ -170,17 +171,145 @@ def _detect_handler_variant(
     return best_variant
 
 
+def _drop_noop_jumps(ops: list[dict]) -> list[dict]:
+    """Remove JMPs that only fall through to the next emitted instruction."""
+    removed = {
+        i
+        for i, op in enumerate(ops)
+        if op.get("opcode_name") == "ZEND_JMP"
+        and (op.get("jump_targets") or [None]) == [i + 1]
+    }
+    if not removed:
+        return ops
+
+    kept = [i for i in range(len(ops)) if i not in removed]
+    old_to_new = {old: new for new, old in enumerate(kept)}
+    next_kept: dict[int, int] = {}
+    upcoming = len(kept)
+    for old in range(len(ops) - 1, -1, -1):
+        if old in old_to_new:
+            upcoming = old_to_new[old]
+        next_kept[old] = upcoming
+
+    out = []
+    for old in kept:
+        op = copy.deepcopy(ops[old])
+        if op.get("jump_targets"):
+            op["jump_targets"] = [
+                old_to_new.get(t, next_kept.get(t, t))
+                for t in op["jump_targets"]
+            ]
+        op["index"] = len(out)
+        out.append(op)
+    return out
+
+
+def _simplify_unconditional_cfg(op_entry: dict) -> dict:
+    """Walk deterministic control flow in execution order and drop dead code."""
+    ops = op_entry.get("opcodes") or []
+    n = len(ops)
+    names = {o.get("opcode_name") for o in ops}
+    if (
+        n <= 1
+        or "ZEND_JMP" not in names
+        or "ZEND_MATCH" in names
+        or names & {"ZEND_JMPZ", "ZEND_JMPNZ"}
+    ):
+        return op_entry
+
+    order = []
+    seen: set[int] = set()
+    cursor = 0
+    while 0 <= cursor < n and cursor not in seen:
+        seen.add(cursor)
+        order.append(cursor)
+        name = ops[cursor].get("opcode_name", "")
+        targets = ops[cursor].get("jump_targets") or []
+        if name == "ZEND_JMP" and targets:
+            cursor = targets[0]
+        elif name in ("ZEND_RETURN", "ZEND_THROW", "ZEND_EXIT"):
+            break
+        else:
+            cursor += 1
+
+    old_to_new = {old: new for new, old in enumerate(order)}
+    new_ops = []
+    unchanged = len(order) == n
+    for old in order:
+        new_op = copy.deepcopy(ops[old])
+        if new_op.get("jump_targets"):
+            new_targets = [old_to_new.get(t, t) for t in new_op["jump_targets"]]
+            unchanged = unchanged and new_targets == new_op["jump_targets"]
+            new_op["jump_targets"] = new_targets
+        new_op["index"] = len(new_ops)
+        new_ops.append(new_op)
+
+    new_ops = _drop_noop_jumps(new_ops)
+    if unchanged and new_ops == ops:
+        return op_entry
+
+    res = copy.deepcopy(op_entry)
+    res["opcodes"] = new_ops
+    return res
+
+
+def _drop_self_target_conditionals(ops: list[dict]) -> list[dict]:
+    """Remove no-op conditionals, but never a loop header guard."""
+    loop_headers = {
+        target
+        for index, op in enumerate(ops)
+        for target in (op.get("jump_targets") or [])
+        if target <= index
+    }
+    removed = {
+        i
+        for i, op in enumerate(ops)
+        if op.get("opcode_name") in ("ZEND_JMPZ", "ZEND_JMPNZ")
+        and (op.get("jump_targets") or [None]) == [i + 1]
+        and i not in loop_headers
+    }
+    if not removed:
+        return ops
+
+    kept = [i for i in range(len(ops)) if i not in removed]
+    old_to_new = {old: new for new, old in enumerate(kept)}
+    next_kept: dict[int, int] = {}
+    upcoming = len(kept)
+    for old in range(len(ops) - 1, -1, -1):
+        if old in old_to_new:
+            upcoming = old_to_new[old]
+        next_kept[old] = upcoming
+
+    out = []
+    for old in kept:
+        op = copy.deepcopy(ops[old])
+        if op.get("jump_targets"):
+            op["jump_targets"] = [
+                old_to_new.get(t, next_kept.get(t, t))
+                for t in op["jump_targets"]
+            ]
+        op["index"] = len(out)
+        out.append(op)
+    return out
+
+
 def deobfuscate_cfg(op_entry: dict) -> dict:
-    """Linearize permuted/scrambled basic blocks in IonCube op_arrays into clean topological CFG."""
+    """Linearize permuted IonCube blocks using natural-loop/dominator data."""
     ops = op_entry.get("opcodes") or []
     n = len(ops)
     if n <= 2:
         return op_entry
+    if any(o.get("opcode_name") == "ZEND_MATCH" for o in ops):
+        # Match arm offsets are byte distances into the original op array.
+        # Reordering or dead-code removal invalidates them.
+        return op_entry
 
     leaders = {0}
+    explicit_targets: set[int] = set()
     for i, o in enumerate(ops):
         nm = o.get("opcode_name", "")
         for t in (o.get("jump_targets") or []):
+            explicit_targets.add(t)
             if 0 <= t < n:
                 leaders.add(t)
         if nm in ("ZEND_JMP", "ZEND_JMPZ", "ZEND_JMPNZ", "ZEND_RETURN", "ZEND_THROW", "ZEND_EXIT"):
@@ -188,7 +317,7 @@ def deobfuscate_cfg(op_entry: dict) -> dict:
                 leaders.add(i + 1)
 
     sorted_leaders = sorted(leaders)
-    blocks = {}
+    blocks: dict[int, dict] = {}
     for idx, start in enumerate(sorted_leaders):
         end = (sorted_leaders[idx + 1] - 1) if idx + 1 < len(sorted_leaders) else (n - 1)
         last_op = ops[end]
@@ -203,12 +332,124 @@ def deobfuscate_cfg(op_entry: dict) -> dict:
             succs = []
         else:
             succs = [end + 1] if end + 1 < n else []
-
-        is_trampoline = (start == end and last_nm == "ZEND_JMP")
         blocks[start] = {
             "start": start, "end": end, "succs": succs,
-            "last": last_nm, "is_trampoline": is_trampoline,
+            "last": last_nm, "is_trampoline": False,
         }
+
+    preds: dict[int, set[int]] = {b: set() for b in blocks}
+    for b_start, b in blocks.items():
+        for s in b["succs"]:
+            if s in blocks:
+                preds[s].add(b_start)
+
+    reachable: set[int] = set()
+    stack = [0]
+    while stack:
+        b = stack.pop()
+        if b in reachable or b not in blocks:
+            continue
+        reachable.add(b)
+        stack.extend(s for s in blocks[b]["succs"] if s in blocks)
+
+    dom: dict[int, set[int]] = {b: set(reachable) for b in reachable}
+    if 0 in dom:
+        dom[0] = {0}
+    changed = True
+    while changed:
+        changed = False
+        for b in reachable:
+            if b == 0:
+                continue
+            incoming = [dom[p] for p in preds[b] if p in dom]
+            new_dom = set.intersection(*incoming) if incoming else set()
+            new_dom.add(b)
+            if new_dom != dom[b]:
+                dom[b] = new_dom
+                changed = True
+
+    natural_loops: list[tuple[int, set[int]]] = []
+    for tail, b in blocks.items():
+        if tail not in dom:
+            continue
+        for header in b["succs"]:
+            if header not in dom or header not in dom[tail]:
+                continue
+            loop_blocks = {header}
+            pending = [tail]
+            while pending:
+                node = pending.pop()
+                if node in loop_blocks:
+                    continue
+                loop_blocks.add(node)
+                for p in preds.get(node, ()):
+                    if p in dom and header in dom[p]:
+                        pending.append(p)
+            natural_loops.append((header, loop_blocks))
+
+    def enclosing_loop(start: int) -> tuple[int, set[int]] | None:
+        candidates = [loop for loop in natural_loops if start in loop[1]]
+        return min(candidates, key=lambda loop: len(loop[1])) if candidates else None
+
+    for start, b in blocks.items():
+        # NOP-prefixed JMPs can also point backward: they are merge trampolines
+        # unless the dominator check below proves they close a natural loop.
+        is_nop_prefix = (
+            b["end"] > b["start"]
+            and b["last"] == "ZEND_JMP"
+            and bool(b["succs"])
+            and all(op.get("opcode_name") == "ZEND_NOP" for op in ops[b["start"]:b["end"]])
+        )
+        is_foreach_continue = (
+            b["start"] == b["end"]
+            and b["last"] == "ZEND_JMP"
+            and bool(b["succs"])
+            and b["succs"][0] < n
+            and ops[b["succs"][0]].get("opcode_name") in ("ZEND_FE_FETCH_R", "ZEND_FE_FETCH_RW")
+        )
+        is_trampoline = (
+            (
+                b["start"] == b["end"]
+                and b["last"] == "ZEND_JMP"
+                and (start not in explicit_targets or is_foreach_continue)
+            )
+            or is_nop_prefix
+        )
+        if is_trampoline:
+            target = b["succs"][0] if b["succs"] else None
+            loop = enclosing_loop(start)
+            if target is None:
+                is_trampoline = False
+            elif target <= start:
+                # A backward JMP is a loop latch only when its target dominates
+                # the block (the edge closes a natural loop). Other backward
+                # single-JMP blocks are permuted forwarding stubs and can be
+                # collapsed like forward ones.
+                if target in dom.get(start, ()) and not is_foreach_continue:
+                    is_trampoline = False
+            else:
+                if loop is not None and target not in loop[1]:
+                    is_trampoline = False
+                else:
+                    # A JMP immediately after a loop-header conditional is part
+                    # of the loop's guard, not a throwaway trampoline.
+                    # Collapsing it turns `while (cond) { ... }` into
+                    # `while (true)`.
+                    for pred in preds.get(start, ()):
+                        pred_block = blocks[pred]
+                        if (
+                            pred_block["last"] in ("ZEND_JMPZ", "ZEND_JMPNZ")
+                            and pred_block["end"] + 1 == start
+                        ):
+                            cond_loop = enclosing_loop(pred)
+                            if (
+                                cond_loop is not None
+                                and target not in cond_loop[1]
+                                and pred <= blocks[cond_loop[0]]["end"] + 1
+                            ):
+                                is_trampoline = False
+                                break
+        b["is_trampoline"] = is_trampoline
 
     def resolve_target(t):
         visited = set()
@@ -223,8 +464,22 @@ def deobfuscate_cfg(op_entry: dict) -> dict:
             curr = succs[0]
         return curr
 
-    # Detect conditional branch pairs
-    # If a block ends in ZEND_JMPZ/NZ, and the very next block is a single ZEND_JMP trampoline
+    def resolve_jump_chain(t):
+        """Follow single-JMP blocks to the first block that emits real code."""
+        seen = set()
+        curr = t
+        while curr in blocks:
+            if curr in seen:
+                break
+            seen.add(curr)
+            b = blocks[curr]
+            if not (b["start"] == b["end"] and b["last"] == "ZEND_JMP"):
+                break
+            if not b["succs"]:
+                break
+            curr = b["succs"][0]
+        return curr
+
     cond_branches = {}
     for b_start, b in blocks.items():
         if b["last"] in ("ZEND_JMPZ", "ZEND_JMPNZ"):
@@ -232,70 +487,155 @@ def deobfuscate_cfg(op_entry: dict) -> dict:
             fall_b = b["end"] + 1
             if fall_b in blocks and blocks[fall_b]["is_trampoline"]:
                 t_fall = resolve_target(blocks[fall_b]["succs"][0])
-                # For ZEND_JMPZ:
-                # fallthrough is taken when condition is TRUE -> then_block
-                # jump is taken when condition is FALSE -> else/cont block
                 if b["last"] == "ZEND_JMPZ":
                     then_b = t_fall
                     else_b = t_jump
-                else:  # ZEND_JMPNZ
+                else:
                     then_b = t_jump
                     else_b = t_fall
+                if resolve_jump_chain(then_b) == resolve_jump_chain(else_b):
+                    # The branches converge after an intermediate jump. Keeping
+                    # the original shape avoids rewriting it into an empty if.
+                    continue
                 cond_branches[b_start] = {
                     "then_b": then_b,
                     "else_b": else_b,
                     "trampoline_b": fall_b,
                 }
 
-    visited = set()
-    order = []
+    def entry_init_order() -> list[int] | None:
+        """Move an entry-JMP initialization region ahead of the fallthrough body.
 
-    def schedule_block(b_start):
-        b_start = resolve_target(b_start)
-        if b_start in visited or b_start not in blocks:
-            return
-        visited.add(b_start)
-        order.append(b_start)
-        b = blocks[b_start]
-
-        if b_start in cond_branches:
-            info = cond_branches[b_start]
-            schedule_block(info["then_b"])
-            schedule_block(info["else_b"])
+        IonCube sometimes keeps the opline order `entry JMP init; body; init`
+        where the init block jumps back to the body.  Emitting that order
+        requires a goto and leaves the body reading variables before they are
+        assigned.  The block layout alone proves the permutation: the entry
+        JMP target is the init region, that region ends on the fallthrough, and
+        no other edge enters the region.
+        """
+        if any(
+            entry.get("catch_op") is not None
+            for entry in op_entry.get("try_catch") or []
+        ):
+            return None
+        if any(
+            o.get("opcode_name") in ("ZEND_MATCH", "ZEND_SWITCH_STRING", "ZEND_SWITCH_LONG")
+            for o in ops
+        ):
+            return None
+        block_order = sorted(blocks)
+        if not block_order or block_order[0] != 0:
+            return None
+        first = blocks[0]
+        if first["last"] != "ZEND_JMP" or not first["succs"]:
+            return None
+        target = first["succs"][0]
+        fall = first["end"] + 1
+        if target <= fall or target not in blocks or fall not in blocks:
+            return None
+        region: list[int] = []
+        cursor = target
+        while cursor in blocks and not blocks[cursor]["is_trampoline"]:
+            region.append(cursor)
+            block = blocks[cursor]
+            if block["last"] == "ZEND_JMP" and block["succs"] and block["succs"][0] == fall:
+                break
+            cursor = block["end"] + 1
         else:
-            for s in b["succs"]:
-                schedule_block(s)
+            return None
+        if not region or region[-1] != cursor:
+            return None
+        region_end = blocks[region[-1]]["end"]
+        for idx, op in enumerate(ops):
+            if target <= idx <= region_end:
+                continue
+            for t in op.get("jump_targets") or []:
+                if target <= t <= region_end and not (
+                    first["start"] <= idx <= first["end"] and t == target
+                ):
+                    return None
+        for idx in range(target, region_end + 1):
+            for t in ops[idx].get("jump_targets") or []:
+                if not (target <= t <= region_end or t == fall):
+                    return None
+        middle = [s for s in block_order if fall <= s < target]
+        if not middle or middle[0] != fall:
+            return None
+        for left, right in zip(middle, middle[1:]):
+            if blocks[left]["end"] + 1 != right:
+                return None
+        order = [0, *region, *middle, *(s for s in block_order if s > region_end)]
+        kept = [s for s in order if s in reachable and not blocks[s]["is_trampoline"]]
+        represented = set(kept)
+        for b_start in kept:
+            block = blocks[b_start]
+            for idx in range(block["start"], block["end"] + 1):
+                for t in ops[idx].get("jump_targets") or []:
+                    if resolve_target(t) not in represented:
+                        return None
+        return kept
 
-    schedule_block(0)
-    for b_start in sorted(blocks.keys()):
-        if b_start not in visited and not blocks[b_start]["is_trampoline"]:
-            schedule_block(b_start)
+    if not cond_branches:
+        # Follow execution first: it already drops code after RETURN and keeps
+        # shared return blocks in their natural order.  Only fall back to the
+        # entry-init permutation when a conditional (or another early exit)
+        # makes the straight walk refuse to rewrite the block.
+        simplified = _simplify_unconditional_cfg(op_entry)
+        if simplified is not op_entry:
+            return simplified
+        order = entry_init_order()
+        if order is None:
+            return simplified
+    else:
+        visited: set[int] = set()
+        order = []
 
-    import copy
+        def schedule_block(b_start):
+            b_start = resolve_target(b_start)
+            if b_start in visited or b_start not in blocks:
+                return
+            visited.add(b_start)
+            order.append(b_start)
+            b = blocks[b_start]
+
+            if b_start in cond_branches:
+                info = cond_branches[b_start]
+                schedule_block(info["then_b"])
+                schedule_block(info["else_b"])
+            elif b["last"] == "ZEND_JMPZ":
+                schedule_block(b["end"] + 1)
+                schedule_block(b["succs"][0])
+            elif b["last"] == "ZEND_JMPNZ":
+                schedule_block(b["succs"][0])
+                schedule_block(b["end"] + 1)
+            else:
+                for s in b["succs"]:
+                    schedule_block(s)
+
+        schedule_block(0)
+        for b_start in sorted(blocks.keys()):
+            if b_start not in visited and not blocks[b_start]["is_trampoline"]:
+                schedule_block(b_start)
+
     new_ops = []
     old_to_new_start = {}
-
     for b_idx, b_start in enumerate(order):
         b = blocks[b_start]
         old_to_new_start[b_start] = len(new_ops)
         b_ops = ops[b["start"]:b["end"] + 1]
-
         next_b_start = order[b_idx + 1] if b_idx + 1 < len(order) else None
-
         for op_idx_in_b, op_in_block in enumerate(b_ops):
             op_copy = copy.deepcopy(op_in_block)
             is_last = (op_idx_in_b == len(b_ops) - 1)
-
             if is_last and b_start in cond_branches:
                 info = cond_branches[b_start]
-                # In standard Zend, ZEND_JMPZ jumps to else_b when false, falls through to then_b
-                # We placed then_b immediately after b_start, so the jump target is else_b!
                 op_copy["jump_targets"] = [info["else_b"]]
+                if op_copy.get("opcode_name") == "ZEND_JMPNZ":
+                    op_copy["opcode_name"] = "ZEND_JMPZ"
             elif is_last and op_copy.get("opcode_name") == "ZEND_JMP":
                 resolved_dst = resolve_target(op_copy.get("jump_targets", [None])[0])
                 if resolved_dst == next_b_start:
                     continue
-
             new_ops.append(op_copy)
 
     for i, o in enumerate(new_ops):
@@ -310,10 +650,11 @@ def deobfuscate_cfg(op_entry: dict) -> dict:
             o["jump_targets"] = new_jts
         o["index"] = i
 
+    new_ops = _drop_self_target_conditionals(new_ops)
+
     res = copy.deepcopy(op_entry)
     res["opcodes"] = new_ops
     return res
-
 
 def _parse_try_catch_records(raw_bytes: bytes) -> list[dict]:
     """Parse raw 16-byte try/catch records: [try_op, catch_op, finally_op, finally_end].

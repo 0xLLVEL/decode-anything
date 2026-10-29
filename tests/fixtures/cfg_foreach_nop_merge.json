@@ -1,0 +1,279 @@
+{
+  "format": "icdump-ir-v1",
+  "source_file": "cfg_foreach_nop_merge.json",
+  "entry": "main",
+  "op_arrays": {
+    "function:666f72656163685f6e6f705f6d65726765": {
+      "kind": "function",
+      "meta": {},
+      "function_name": {
+        "type": "string",
+        "length": 17,
+        "printable": true,
+        "value": "foreach_nop_merge"
+      },
+      "vars": {
+        "type": "array",
+        "value": {
+          "0": {
+            "type": "string",
+            "length": 5,
+            "printable": true,
+            "value": "items"
+          },
+          "1": {
+            "type": "string",
+            "length": 4,
+            "printable": true,
+            "value": "item"
+          }
+        }
+      },
+      "arg_info": [
+        {
+          "index": 0,
+          "name": "items",
+          "type_name": null,
+          "pass_by_reference": false,
+          "allow_null": false,
+          "is_variadic": false,
+          "has_default": false
+        }
+      ],
+      "num_args": 1,
+      "required_num_args": 1,
+      "fn_flags_decoded": {},
+      "literals": [],
+      "try_catch": [],
+      "opcodes": [
+        {
+          "opcode_name": "ZEND_RECV",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 48,
+            "cv_name": "items",
+            "cv_index": 0
+          },
+          "jump_targets": [],
+          "index": 0
+        },
+        {
+          "opcode_name": "ZEND_FE_RESET_R",
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 48,
+            "cv_name": "items",
+            "cv_index": 0
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "var": 96
+          },
+          "jump_targets": [
+            7
+          ],
+          "index": 1
+        },
+        {
+          "opcode_name": "ZEND_FE_FETCH_R",
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "var": 96
+          },
+          "op2": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 64,
+            "cv_name": "item",
+            "cv_index": 1
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            7
+          ],
+          "index": 2
+        },
+        {
+          "opcode_name": "ZEND_JMPZ",
+          "op1": {
+            "type": 8,
+            "type_name": "IS_CV",
+            "var": 64,
+            "cv_name": "item",
+            "cv_index": 1
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            6
+          ],
+          "index": 3
+        },
+        {
+          "opcode_name": "ZEND_JMP",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            5
+          ],
+          "index": 4
+        },
+        {
+          "opcode_name": "ZEND_ECHO",
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "literal": {
+              "type": "string",
+              "length": 1,
+              "printable": true,
+              "value": "x"
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [],
+          "index": 5
+        },
+        {
+          "opcode_name": "ZEND_JMP",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            2
+          ],
+          "index": 6
+        },
+        {
+          "opcode_name": "ZEND_NOP",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [],
+          "index": 7
+        },
+        {
+          "opcode_name": "ZEND_JMP",
+          "op1": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [
+            9
+          ],
+          "index": 8
+        },
+        {
+          "opcode_name": "ZEND_FE_FREE",
+          "op1": {
+            "type": 2,
+            "type_name": "IS_TMP_VAR",
+            "var": 96
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [],
+          "index": 9
+        },
+        {
+          "opcode_name": "ZEND_RETURN",
+          "op1": {
+            "type": 1,
+            "type_name": "IS_CONST",
+            "literal": {
+              "type": "null",
+              "value": null
+            }
+          },
+          "op2": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "result": {
+            "type": 0,
+            "type_name": "IS_UNUSED"
+          },
+          "jump_targets": [],
+          "index": 10
+        }
+      ]
+    }
+  },
+  "function_index": {},
+  "closure_index": {},
+  "class_index": {}
+}

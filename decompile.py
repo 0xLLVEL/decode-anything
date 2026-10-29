@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Add decompiler src to Python module path
@@ -205,30 +206,279 @@ def _invert_empty_if_guards(code: str) -> str:
         out.append(line)
         i += 1
     
-    # Remove any remaining empty if blocks
+    # Remove any remaining empty if blocks. Conditions can contain nested
+    # parentheses, so match the opening line rather than the condition text.
     res = "\n".join(out)
-    res = re.sub(r'^[ \t]*if\s*\([^\)]+\)\s*\{\s*\}\s*\n', '', res, flags=re.MULTILINE)
-    return res
+    lines = res.splitlines()
+    cleaned = []
+    i = 0
+    while i < len(lines):
+        if re.match(r'^[ \t]*if\s*\(.*\)\s*\{\s*$', lines[i]):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and re.match(r'^[ \t]*\}\s*$', lines[j]):
+                i = j + 1
+                continue
+        cleaned.append(lines[i])
+        i += 1
+    return "\n".join(cleaned)
 
 
-def _normalize_psr4_namespaces(code: str, namespace: str | None = None) -> str:
+_LOOP_HEADER_RE = re.compile(r"^([ \t]*)(foreach|while|for)\b[^\n]*\{\s*$")
+_SWITCH_HEADER_RE = re.compile(r"^([ \t]*)switch\b[^\n]*\{\s*$")
+_FUNCTION_HEADER_RE = re.compile(
+    r"^[ \t]*(?:(?:public|private|protected|static|final|abstract|readonly)\s+)*"
+    r"function\b[^\n]*\{\s*$"
+)
+_LABEL_LINE_RE = re.compile(r"^[ \t]*(label_\w+):\s*$")
+
+
+def _block_close_line(masked_lines: list[str], start: int) -> int | None:
+    depth = 0
+    for index in range(start, len(masked_lines)):
+        depth += masked_lines[index].count("{") - masked_lines[index].count("}")
+        if depth == 0:
+            return index
+    return None
+
+
+def _function_spans(masked_lines: list[str]) -> list[tuple[int, int]]:
+    spans = []
+    for index, line in enumerate(masked_lines):
+        if _FUNCTION_HEADER_RE.match(line):
+            close = _block_close_line(masked_lines, index)
+            if close is not None:
+                spans.append((index, close))
+    return spans
+
+
+def _label_scope(masked_lines: list[str], line_index: int) -> tuple[int, int]:
+    spans = [s for s in _function_spans(masked_lines) if s[0] <= line_index <= s[1]]
+    return min(spans, key=lambda s: s[1] - s[0]) if spans else (0, len(masked_lines) - 1)
+
+
+def _drop_redundant_gotos(lines: list[str], masked: list[str]) -> bool:
+    removals = set()
+    for index, line in enumerate(masked):
+        match = re.match(r"^[ \t]*goto\s+(label_\w+);\s*$", line)
+        if not match:
+            continue
+        following = index + 1
+        while following < len(masked) and not masked[following].strip():
+            following += 1
+        if following >= len(masked) or not re.match(
+            r"^[ \t]*" + re.escape(match.group(1)) + r":\s*$", masked[following]
+        ):
+            continue
+        previous = index - 1
+        while previous >= 0 and not masked[previous].strip():
+            previous -= 1
+        if previous >= 0 and masked[previous].rstrip().endswith("{"):
+            continue
+        removals.add(index)
+    for index in sorted(removals, reverse=True):
+        del lines[index]
+    return bool(removals)
+
+
+def _drop_unreferenced_labels(lines: list[str], masked: list[str]) -> bool:
+    removals: set[int] = set()
+    spans = _function_spans(masked) or [(0, len(masked) - 1)]
+    for start, end in spans:
+        referenced = set(
+            re.findall(r"\bgoto\s+(label_\w+)\s*;", "\n".join(masked[start:end + 1]))
+        )
+        for index in range(start, end + 1):
+            match = _LABEL_LINE_RE.match(masked[index])
+            if match and match.group(1) not in referenced:
+                removals.add(index)
+    for index in sorted(removals, reverse=True):
+        del lines[index]
+    return bool(removals)
+
+
+def _structure_loop_exit_guards(code: str) -> str:
+    """Rewrite `if (cond) goto label;` loop exits as break, preserving skipped code."""
+    for _ in range(512):
+        lines = code.splitlines()
+        masked = _mask_php_literals(code).splitlines()
+        if _drop_redundant_gotos(lines, masked):
+            code = "\n".join(lines)
+            continue
+        if _drop_unreferenced_labels(lines, masked):
+            code = "\n".join(lines)
+            continue
+        action = None
+
+        for i in range(len(lines) - 2):
+            header = re.match(r"^([ \t]*)if\s*\((.+)\)\s*\{\s*$", masked[i])
+            if not header:
+                continue
+            goto_line = i + 1
+            while goto_line < len(lines) and not masked[goto_line].strip():
+                goto_line += 1
+            rm = re.match(r"^[ \t]*goto\s+(label_\w+);\s*$", masked[goto_line]) if goto_line < len(lines) else None
+            if not rm:
+                continue
+            close_line = goto_line + 1
+            while close_line < len(lines) and not masked[close_line].strip():
+                close_line += 1
+            if close_line >= len(lines) or not re.match(r"^[ \t]*\}\s*$", masked[close_line]):
+                continue
+            after = close_line + 1
+            while after < len(lines) and not masked[after].strip():
+                after += 1
+            if after < len(lines) and re.match(r"^[ \t]*(?:else|elseif)\b", masked[after]):
+                continue
+
+            label = rm.group(1)
+            scope_start, scope_end = _label_scope(masked, i)
+            if len(re.findall(
+                r"\bgoto\s+" + re.escape(label) + r"\s*;",
+                "\n".join(masked[scope_start:scope_end + 1]),
+            )) != 1:
+                continue
+
+            guard_indent = len(header.group(1))
+            loop_line = None
+            for candidate in range(i - 1, -1, -1):
+                lm = _LOOP_HEADER_RE.match(masked[candidate])
+                if not lm or len(lm.group(1)) >= guard_indent:
+                    continue
+                if _block_close_line(masked, candidate) is None:
+                    continue
+                loop_line = candidate
+                break
+            if loop_line is None:
+                continue
+
+            loop_indent = len(_LOOP_HEADER_RE.match(masked[loop_line]).group(1))
+            loop_close = _block_close_line(masked, loop_line)
+            if loop_close is None or loop_close <= close_line:
+                continue
+
+            in_switch = any(
+                _SWITCH_HEADER_RE.match(masked[cand])
+                and len(_SWITCH_HEADER_RE.match(masked[cand]).group(1)) < guard_indent
+                and (_block_close_line(masked, cand) or -1) > i
+                for cand in range(loop_line + 1, i)
+            )
+            if in_switch:
+                continue
+
+            label_line = None
+            for cand in range(loop_close + 1, scope_end + 1):
+                if re.match(r"^[ \t]*" + re.escape(label) + r":\s*$", masked[cand]):
+                    label_line = cand
+                    break
+            if label_line is None or label_line <= loop_close:
+                continue
+
+            outer_loop = None
+            for cand in range(loop_line - 1, -1, -1):
+                lm = _LOOP_HEADER_RE.match(masked[cand])
+                if not lm or len(lm.group(1)) >= loop_indent:
+                    continue
+                cand_close = _block_close_line(masked, cand)
+                if cand_close is not None and cand_close > loop_line:
+                    outer_loop = cand_close
+                    break
+            if outer_loop is not None and label_line > outer_loop:
+                continue
+
+            direct = all(not masked[cand].strip() for cand in range(loop_close + 1, label_line))
+            if not direct:
+                label_indent = len(re.match(r"^[ \t]*", masked[label_line]).group(0))
+                if label_indent > loop_indent:
+                    continue
+                intervening = masked[loop_close + 1:label_line]
+                if any(re.search(r"\b(?:goto\s+label_|label_\w+\s*:)", line) for line in intervening):
+                    continue
+                depth = sum(line.count("{") - line.count("}") for line in intervening)
+                if depth != 0:
+                    continue
+
+            action = (i, goto_line, close_line, loop_close, label_line, header.group(2), label, guard_indent, loop_indent, direct)
+            break
+
+        if action is None:
+            return code
+
+        i, goto_line, close_line, loop_close, label_line, cond, label, guard_indent, loop_indent, direct = action
+        flag = f"$__exit_guard_{label.split('_')[-1]}"
+        if flag in code:
+            suffix = 2
+            while f"{flag}_{suffix}" in code:
+                suffix += 1
+            flag = f"{flag}_{suffix}"
+
+        break_indent = " " * (guard_indent + 4)
+        guard_body = []
+        if not direct:
+            guard_body.append(f"{break_indent}{flag} = true;")
+        guard_body.append(f"{break_indent}break;")
+
+        replacement = [lines[i], *guard_body, lines[close_line]]
+        if direct:
+            lines[i:close_line + 1] = replacement
+        else:
+            wrapper_open = f"{' ' * loop_indent}if (empty({flag})) {{"
+            wrapper_close = f"{' ' * loop_indent}}}"
+            lines[i:close_line + 1] = replacement
+            # Both the loop close and the target label move with the guard.
+            shift = len(replacement) - (close_line - i + 1)
+            label_line += shift
+            loop_close += shift
+            lines[label_line:label_line] = [wrapper_close]
+            lines[loop_close + 1:loop_close + 1] = [wrapper_open]
+        code = "\n".join(lines)
+
+    return code
+
+
+def _normalize_psr4_namespaces(
+    code: str,
+    namespace: str | None = None,
+    declared_classes: set[str] | None = None,
+) -> str:
     """Universally normalize PascalCase concatenated namespaces for vendor and project classes."""
+    declared_classes = declared_classes or set()
+
+    def replace_namespace(match: re.Match[str], target: str) -> str:
+        return match.group(0) if match.group(0) in declared_classes else target
+
     for vendor, classes in VENDOR_PSR4_MAP.items():
         for cls in classes:
             target = f"{vendor}\\{cls}"
-            code = re.sub(r'\b' + vendor + cls + r'\b', lambda m, t=target: t, code)
-            code = re.sub(r'\b' + vendor + r'\\\\?' + cls + r'\b', lambda m, t=target: t, code)
+            code = re.sub(
+                r'\b' + vendor + cls + r'\b',
+                lambda m, t=target: replace_namespace(m, t),
+                code,
+            )
+            code = re.sub(
+                r'\b' + vendor + r'\\\\?' + cls + r'\b',
+                lambda m, t=target: replace_namespace(m, t),
+                code,
+            )
 
     if namespace:
         root_ns = namespace.split('\\')[0]
+
         def repl_project_ns(m):
             matched = m.group(0)
+            if matched in declared_classes:
+                return matched
             parts = re.findall(r'[A-Z][a-z0-9_]*', matched)
             if len(parts) >= 2:
                 return '\\'.join(parts)
             return matched
 
-        code = re.sub(r'\b' + re.escape(root_ns) + r'[A-Z][A-Za-z0-9_]+\b', repl_project_ns, code)
+        code = re.sub(
+            r'\b' + re.escape(root_ns) + r'[A-Z][A-Za-z0-9_]+\b',
+            repl_project_ns,
+            code,
+        )
 
     return code
 
@@ -370,6 +620,7 @@ def clean_php_source(raw_php: str) -> str:
         parts = full_name.split('\\')
         namespace = '\\'.join(parts[:-1])
         short_name = parts[-1]
+        declared_classes.add(short_name)
 
 
         # Replace full namespaced declaration with short name
@@ -494,10 +745,19 @@ def clean_php_source(raw_php: str) -> str:
 
     # 7. Clean up redundant immediate gotos and unreferenced labels
     def _clean_redundant_gotos_and_labels(code: str) -> str:
-        # Drop `goto label_X;` immediately preceding `label_X:`
+        # Drop `goto label_X;` immediately preceding `label_X:`. Keep it when
+        # it is the only statement in a branch/loop body; removing it there
+        # would leave an empty control-flow block.
+        def _drop_redundant_goto(match: re.Match) -> str:
+            prefix = code[: match.start()]
+            previous = [line for line in prefix.splitlines() if line.strip()]
+            if previous and previous[-1].rstrip().endswith("{"):
+                return match.group(0)
+            return ""
+
         code = re.sub(
             r'^[ \t]*goto\s+(label_\w+);\s*\n(?=[ \t]*\1:)',
-            '',
+            _drop_redundant_goto,
             code,
             flags=re.MULTILINE,
         )
@@ -534,7 +794,9 @@ def clean_php_source(raw_php: str) -> str:
 
     # 4. Universal syntax and AST anomaly resolutions
     # 4a. Normalize PascalCase concatenated vendor and project namespaces
-    raw_php = _normalize_psr4_namespaces(raw_php, namespace=namespace)
+    raw_php = _normalize_psr4_namespaces(
+        raw_php, namespace=namespace, declared_classes=declared_classes
+    )
 
     # 4b. Resolve leaked compiler temporary variables ($tmpN)
     raw_php = _resolve_leaked_temps(raw_php)
@@ -559,6 +821,9 @@ def clean_php_source(raw_php: str) -> str:
 
     # 4e. Simplify negated boolean expressions with De Morgan patterns
     raw_php = _simplify_boolean_expressions(raw_php)
+
+    # 4f. Turn loop-exit gotos into structured break/flag guards
+    raw_php = _structure_loop_exit_guards(raw_php)
 
     # 5. If namespace detected, format top of file cleanly
     if namespace:
@@ -661,8 +926,152 @@ def validate_php_syntax(php_file: Path) -> tuple[bool, str]:
         )
         output = (res.stdout + res.stderr).strip()
         return res.returncode == 0, output
+    except FileNotFoundError:
+        return False, "php executable not found; syntax validation skipped"
     except Exception as exc:
-        return False, str(exc)
+        return False, f"syntax validation failed: {exc}"
+
+
+_EMPTY_BODY_KEYWORD = re.compile(r"\b(?:if|elseif|else|for|foreach|while|do|switch)\b")
+_PAREN_BODY_KEYWORDS = frozenset({"if", "elseif", "for", "foreach", "while", "switch"})
+
+
+def _mask_php_literals(code: str) -> str:
+    """Blank strings, comments and heredocs while preserving braces and newlines."""
+    masked = list(code)
+    n = len(code)
+
+    def blank(start: int, end: int) -> None:
+        for pos in range(start, min(end, n)):
+            if code[pos] not in "\r\n":
+                masked[pos] = " "
+
+    i = 0
+    while i < n:
+        ch = code[i]
+        if ch in ("'", '"', "`"):
+            j = i + 1
+            while j < n:
+                if code[j] == "\\":
+                    j += 2
+                    continue
+                if code[j] == ch:
+                    j += 1
+                    break
+                j += 1
+            blank(i, j)
+            i = j
+            continue
+
+        if ch == "/" and i + 1 < n and code[i + 1] == "/":
+            j = code.find("\n", i)
+            if j < 0:
+                j = n
+            blank(i, j)
+            i = j
+            continue
+
+        if ch == "#" and not (i + 1 < n and code[i + 1] == "["):
+            j = code.find("\n", i)
+            if j < 0:
+                j = n
+            blank(i, j)
+            i = j
+            continue
+
+        if ch == "/" and i + 1 < n and code[i + 1] == "*":
+            j = code.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            blank(i, j)
+            i = j
+            continue
+
+        if code.startswith("<<<", i):
+            header = re.match(
+                r"<<<[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|([A-Za-z_][A-Za-z0-9_]*))[ \t]*\r?\n",
+                code[i:],
+            )
+            if header:
+                label = header.group(1) or header.group(2) or header.group(3)
+                terminator = re.compile(
+                    r"(?m)^[ \t]*" + re.escape(label) + r";?[ \t]*(?:\r?\n|$)"
+                )
+                end = terminator.search(code, i + header.end())
+                j = end.end() if end else n
+                blank(i, j)
+                i = j
+                continue
+
+        i += 1
+
+    return "".join(masked)
+
+
+def _matching_paren(code: str, open_pos: int) -> int | None:
+    depth = 0
+    for pos in range(open_pos, len(code)):
+        if code[pos] == "(":
+            depth += 1
+        elif code[pos] == ")":
+            depth -= 1
+            if depth == 0:
+                return pos
+    return None
+
+
+def _control_flow_body_open(code: str, keyword: str, keyword_end: int) -> int | None:
+    pos = keyword_end
+    while pos < len(code) and code[pos].isspace():
+        pos += 1
+
+    if keyword in {"else", "do"}:
+        return pos if pos < len(code) and code[pos] == "{" else None
+
+    if keyword not in _PAREN_BODY_KEYWORDS or pos >= len(code) or code[pos] != "(":
+        return None
+
+    close = _matching_paren(code, pos)
+    if close is None:
+        return None
+
+    pos = close + 1
+    while pos < len(code) and code[pos].isspace():
+        pos += 1
+    return pos if pos < len(code) and code[pos] == "{" else None
+
+
+def validate_php_structure(php_code: str) -> tuple[bool, str]:
+    """Reject generated PHP that contains an empty control-flow body."""
+    if "<?php" not in php_code[:32]:
+        return True, ""
+
+    masked = _mask_php_literals(php_code)
+    brace_pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for match in re.finditer(r"[{}]", masked):
+        if match.group() == "{":
+            stack.append(match.start())
+        elif stack:
+            brace_pairs[stack.pop()] = match.start()
+
+    problems: list[str] = []
+    seen_bodies: set[int] = set()
+    for match in _EMPTY_BODY_KEYWORD.finditer(masked):
+        keyword = match.group()
+        open_pos = _control_flow_body_open(masked, keyword, match.end())
+        if open_pos is None or open_pos in seen_bodies:
+            continue
+        close_pos = brace_pairs.get(open_pos)
+        if close_pos is None or masked[open_pos + 1:close_pos].strip():
+            continue
+        seen_bodies.add(open_pos)
+        line = masked.count("\n", 0, match.start()) + 1
+        problems.append(f"line {line}: empty {keyword} body")
+
+    if not problems:
+        return True, ""
+    suffix = f" (+{len(problems) - 1} more)" if len(problems) > 1 else ""
+    return False, problems[0] + suffix
 
 
 import shutil
@@ -681,6 +1090,55 @@ def _format_partial_status(status: dict) -> str:
     if loader.get("degraded"):
         parts.append(f"loader PHP {loader.get('expected_php_version')} missing/mismatched")
     return ", ".join(parts)
+
+
+def _result_exit_code(success: bool, syntax_ok: bool) -> int:
+    if not success:
+        return 1
+    return 0 if syntax_ok else 2
+
+
+def _write_output_atomically(
+    output_path: Path,
+    content: str,
+    *,
+    preserve_on_failure: bool,
+    check_structure: bool = True,
+) -> tuple[bool, bool, str, bool]:
+    """Write via a same-directory temp file, validate, then replace."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+        dir=output_path.parent,
+    )
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        if output_path.exists():
+            try:
+                shutil.copymode(output_path, temp_path)
+            except OSError:
+                pass
+
+        syntax_ok, message = validate_php_syntax(temp_path)
+        if not syntax_ok:
+            message = message.replace(str(temp_path), str(output_path))
+
+        structure_ok = True
+        if syntax_ok and check_structure:
+            structure_ok, structure_message = validate_php_structure(content)
+            if not structure_ok:
+                message = structure_message
+
+        valid = syntax_ok and structure_ok
+        wrote = valid or not preserve_on_failure
+        if wrote:
+            os.replace(temp_path, output_path)
+        return syntax_ok, structure_ok, message, wrote
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def decompile_file(
@@ -747,22 +1205,35 @@ def decompile_file(
             raw_code = emit_php(php_ast)
             final_code = clean_php_source(raw_code)
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(final_code, encoding="utf-8")
-        if not silent_header:
-            print(f"    -> Output saved: {output_path.name} ({len(final_code)} bytes)")
-
-        # Validate syntax with php -l
-        ok, msg = validate_php_syntax(output_path)
-        if ok:
+        preserve_on_failure = input_path.resolve() == output_path.resolve()
+        syntax_ok, structure_ok, msg, wrote = _write_output_atomically(
+            output_path,
+            final_code,
+            preserve_on_failure=preserve_on_failure,
+            check_structure=not is_blade,
+        )
+        if wrote:
             if not silent_header:
-                print(f"    [+] Syntax check: PASS (valid PHP)")
+                print(f"    -> Output saved: {output_path.name} ({len(final_code)} bytes)")
         else:
             if not silent_header:
+                print(f"    [!] Original left untouched: {output_path}")
+        decompile_status["syntax"] = {"ok": syntax_ok, "message": msg if not syntax_ok else ""}
+        decompile_status["structure"] = {"ok": structure_ok, "message": msg if not structure_ok else ""}
+        valid = syntax_ok and structure_ok
+        if valid:
+            if not silent_header:
+                print(f"    [+] Validation: PASS (valid PHP)")
+        elif not syntax_ok:
+            if not silent_header:
                 print(f"    [!] Syntax warning: {msg}")
+        else:
+            if not silent_header:
+                print(f"    [!] Structure warning: {msg}")
         if decompile_status.get("partial") and not silent_header:
             print(f"    [!] Partial decode: {_format_partial_status(decompile_status)}")
-        return True, ok, None, decompile_status
+        error_msg = None if wrote else (msg or "validation failed; original left untouched")
+        return wrote, valid, error_msg, decompile_status
     except Exception as exc:
         err_msg = str(exc)
         if not silent_header:
@@ -795,6 +1266,8 @@ def main() -> int:
         if args.decompile and report.encoded_count > 0:
             ioncube_items = [f for f in report.encoded_files if f.match.name == "ionCube"]
             if ioncube_items:
+                decompile_failures = 0
+                validation_failures = 0
                 print(f"\n[*] Starting auto-decompilation of {len(ioncube_items)} ionCube file(s)...")
                 for idx, f_info in enumerate(ioncube_items, 1):
                     out_f = (args.output / f_info.relative_path) if args.output else f_info.path.with_name(f"{f_info.path.stem}.reconstructed.php")
@@ -806,11 +1279,19 @@ def main() -> int:
                         loader_dll=args.loader_dll,
                         silent_header=True,
                     )
-                    if ok and status.get("partial"):
+                    if not ok:
+                        decompile_failures += 1
+                        st = f"FAILED: {err}"
+                    elif not syn_ok:
+                        validation_failures += 1
+                        stage = "STRUCTURE" if status.get("structure", {}).get("ok") is False else "SYNTAX"
+                        st = f"{stage} FAIL"
+                    elif status.get("partial"):
                         st = f"PARTIAL: {_format_partial_status(status)}"
                     else:
-                        st = "PASS" if syn_ok else ("SUCCESS" if ok else "FAILED")
+                        st = "PASS"
                     print(f"[{st}]")
+                return 1 if decompile_failures else (2 if validation_failures else 0)
         return 0
 
     parser = argparse.ArgumentParser(
@@ -855,7 +1336,7 @@ def main() -> int:
             php_version=args.php_version,
             loader_dll=args.loader_dll,
         )
-        return 0 if success else 1
+        return _result_exit_code(success, syntax_ok)
 
     # Directory mode
     print(f"\n" + "=" * 60)
@@ -924,22 +1405,20 @@ def main() -> int:
             silent_header=True,
         )
 
-        status_str = "SUCCESS" if success else "FAILED"
-        syntax_str = "PASS" if syntax_ok else ("WARN" if success else "N/A")
-        if success:
-            if status.get("partial"):
-                print(f"[~] PARTIAL ({_format_partial_status(status)}; php -l: {syntax_str})")
-            elif syntax_ok:
-                print(f"[+] {status_str} (php -l: {syntax_str})")
-            else:
-                print(f"[!] {status_str} (php -l: {syntax_str})")
+        if not success:
+            print(f"[-] FAILED: {err}")
+        elif not syntax_ok:
+            stage = "STRUCTURE" if status.get("structure", {}).get("ok") is False else "SYNTAX"
+            print(f"[!] {stage} FAIL")
+        elif status.get("partial"):
+            print(f"[~] PARTIAL ({_format_partial_status(status)}; validation: PASS)")
         else:
-            print(f"[-] {status_str}: {err}")
+            print("[+] SUCCESS (validation: PASS)")
 
         results.append({
             "file": rel,
             "success": success,
-            "syntax_ok": syntax_ok,
+            "valid": syntax_ok,
             "error": err,
             "status": status,
         })
@@ -948,8 +1427,9 @@ def main() -> int:
 
     # 4. Final summary report
     success_count = sum(1 for r in results if r["success"])
-    syntax_pass_count = sum(1 for r in results if r["syntax_ok"])
+    validation_pass_count = sum(1 for r in results if r["valid"])
     failed_items = [r for r in results if not r["success"]]
+    validation_failed_items = [r for r in results if r["success"] and not r["valid"]]
     partial_items = [r for r in results if r["success"] and r["status"].get("partial")]
 
     print("\n" + "=" * 60)
@@ -957,11 +1437,17 @@ def main() -> int:
     print("=" * 60)
     print(f"  Total IonCube files  : {len(ioncube_files)}")
     print(f"  Successfully decoded : {success_count} / {len(ioncube_files)}")
-    print(f"  Syntax Valid (php -l): {syntax_pass_count} / {success_count}")
+    print(f"  Validation Valid     : {validation_pass_count} / {success_count}")
     print(f"  Partial decodes      : {len(partial_items)}")
     if args.output and not args.no_copy_other:
         print(f"  Other files mirrored : {copied_count}")
     print(f"  Total time elapsed   : {elapsed:.2f}s")
+
+    if validation_failed_items:
+        print("\n  Validation Failures:")
+        for it in validation_failed_items:
+            stage = "STRUCTURE" if it["status"].get("structure", {}).get("ok") is False else "SYNTAX"
+            print(f"    - [{stage}] {it['file']}")
 
     if partial_items:
         print("\n  Partial Files:")
@@ -974,7 +1460,11 @@ def main() -> int:
             print(f"    - {it['file']}: {it['error']}")
     print("=" * 60 + "\n")
 
-    return 0 if success_count == len(ioncube_files) else 1
+    if failed_items:
+        return 1
+    if validation_failed_items:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

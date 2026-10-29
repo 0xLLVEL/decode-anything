@@ -240,6 +240,22 @@ def test_match_expression():
     assert "default => 0" in out
 
 
+def test_match_expression_clamps_out_of_range_arm_offsets():
+    out = fn([
+        op("ZEND_MATCH", op1=cv(0, "val"), op2=const({"a": 28, "b": 84, "c": 196}), ext=140),
+        op("ZEND_QM_ASSIGN", op1=const(1), result=tmp(96)),
+        op("ZEND_JMP", jump=[7]),
+        op("ZEND_QM_ASSIGN", op1=const(2), result=tmp(96)),
+        op("ZEND_JMP", jump=[7]),
+        op("ZEND_QM_ASSIGN", op1=const(0), result=tmp(96)),
+        op("ZEND_JMP", jump=[7]),
+        op("ZEND_RETURN", op1=tmp(96)),
+    ], cvs=["val"])
+    assert "match ($val)" in out
+    assert "'a' => 1" in out
+    assert "'b' => 2" in out
+
+
 def test_nullsafe_method_call():
     out = fn([
         op("ZEND_JMP_NULL", op1=cv(0, "obj"), result=tmp(96), jump=[3]),
