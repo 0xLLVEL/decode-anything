@@ -61,5 +61,6 @@ def test_sourceguardian_fixture_is_reproducible(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    committed = (CORPUS / "sourceguardian" / "hello.php").read_bytes()
-    assert target.read_bytes() == committed
+    committed = (CORPUS / "sourceguardian" / "hello.php")
+    # Compare text so a CRLF checkout does not fail the fixture check.
+    assert target.read_text(encoding="ascii") == committed.read_text(encoding="ascii")
