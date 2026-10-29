@@ -209,10 +209,32 @@ class Calculator {
 """
     clean = deobfuscate_yakpro(obf)
     assert "goto" not in clean
-    assert "class Calculator {" in clean
+    assert "class Calculator\n{" in clean
     assert "private int $factor = 2;" in clean
-    assert "public function multiply(int $a, int $b): int {" in clean
+    assert "public function multiply(int $a, int $b): int\n    {" in clean
     assert "$res = $a * $b * $this->factor;" in clean
     assert "return $res;" in clean
     assert 'return "ready";' in clean
+
+
+def test_per_formatting_compliance():
+    obf = r"""<?php
+declare (strict_types=1); namespace App\Demo; use App\Foo; use App\Bar;
+class DemoService {
+protected string $name; public function test(int $x): string {
+if($x > 0){
+return "positive";
+}else{
+return "negative";
+}
+}
+}
+"""
+    clean = deobfuscate_yakpro(obf)
+    assert "declare(strict_types=1);\n\nnamespace App\\Demo;\n" in clean
+    assert "class DemoService\n{\n" in clean
+    assert "    public function test(int $x): string\n    {\n" in clean
+    assert "        if ($x > 0) {\n" in clean
+    assert "        } else {\n" in clean
+    assert "    }\n}\n" in clean
 

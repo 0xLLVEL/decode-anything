@@ -497,8 +497,265 @@ def deobfuscate_scope(code: str) -> str:
     return full
 
 
+def split_statements_per(code: str) -> str:
+    """Split concatenated statements onto new lines while preserving strings and for-loops."""
+    out = []
+    n = len(code)
+    in_quote = None
+    escape = False
+    paren_depth = 0
+    in_single_comment = False
+    in_multi_comment = False
+    i = 0
+
+    while i < n:
+        c = code[i]
+        if escape:
+            out.append(c)
+            escape = False
+            i += 1
+            continue
+
+        if c == "\\":
+            out.append(c)
+            escape = True
+            i += 1
+            continue
+
+        if in_single_comment:
+            out.append(c)
+            if c == "\n":
+                in_single_comment = False
+            i += 1
+            continue
+
+        if in_multi_comment:
+            out.append(c)
+            if c == "*" and i + 1 < n and code[i + 1] == "/":
+                out.append("/")
+                in_multi_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if in_quote:
+            out.append(c)
+            if c == in_quote:
+                in_quote = None
+            i += 1
+            continue
+
+        if c in ("'", '"', "`"):
+            in_quote = c
+            out.append(c)
+            i += 1
+            continue
+
+        if c == "/" and i + 1 < n and code[i + 1] == "/":
+            in_single_comment = True
+            out.append(c)
+            i += 1
+            continue
+
+        if c == "/" and i + 1 < n and code[i + 1] == "*":
+            in_multi_comment = True
+            out.append(c)
+            i += 1
+            continue
+
+        if c == "#":
+            in_single_comment = True
+            out.append(c)
+            i += 1
+            continue
+
+        if c == "(":
+            paren_depth += 1
+            out.append(c)
+            i += 1
+            continue
+
+        if c == ")":
+            paren_depth = max(0, paren_depth - 1)
+            out.append(c)
+            i += 1
+            continue
+
+        # If we see semicolon or brace at paren depth 0, check what follows
+        if paren_depth == 0 and c in (";", "{", "}"):
+            out.append(c)
+            j = i + 1
+            while j < n and code[j] in " \t":
+                j += 1
+            if j < n and code[j] not in "\r\n":
+                rest = code[j:]
+                keywords = (
+                    "declare", "namespace", "use ", "class ", "final ", "abstract ",
+                    "interface ", "trait ", "enum ", "public ", "protected ", "private ",
+                    "static ", "function ", "if ", "while ", "for ", "foreach ", "switch ",
+                    "try ", "return ", "throw ", "$", "parent::", "self::", "echo ",
+                    "include", "require"
+                )
+                if any(rest.startswith(kw) for kw in keywords):
+                    out.append("\n")
+                    i = j - 1
+            i += 1
+            continue
+
+        out.append(c)
+        i += 1
+
+    return "".join(out)
+
+
+def count_braces_ignoring_strings(line: str) -> tuple[int, int]:
+    """Count { and } ignoring strings and comments."""
+    opens = 0
+    closes = 0
+    in_quote = None
+    escape = False
+    i = 0
+    n = len(line)
+
+    while i < n:
+        c = line[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if c == "\\":
+            escape = True
+            i += 1
+            continue
+        if in_quote:
+            if c == in_quote:
+                in_quote = None
+            i += 1
+            continue
+        if c in ("'", '"', "`"):
+            in_quote = c
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            break
+        if c == "#":
+            break
+        if c == "{":
+            opens += 1
+        elif c == "}":
+            closes += 1
+        i += 1
+
+    return opens, closes
+
+
+def format_per_coding_style(code: str) -> str:
+    """Format PHP code according to PHP-FIG PER Coding Style (PSR-12)."""
+    # 1. Normalize line breaks and un-cram semicolons/braces
+    code = code.replace("\r\n", "\n").replace("\r", "\n")
+    code = split_statements_per(code)
+
+    # 2. PER Header & Keyword normalizations
+    code = re.sub(r"\bdeclare\s*\(\s*strict_types\s*=\s*1\s*\)\s*;", "declare(strict_types=1);", code)
+
+    # Move class/trait/interface/enum opening brace to its own line
+    code = re.sub(
+        r"(\b(?:final\s+|abstract\s+)*(?:class|trait|interface|enum)\s+[^{]+?)\s*\{",
+        r"\1\n{",
+        code,
+    )
+
+    # Move named function/method opening brace to its own line
+    code = re.sub(
+        r"(\b(?:(?:public|protected|private|static|final|abstract)\s+)+function\s+&?[A-Za-z0-9_]+\s*\([^)]*\)(?:\s*:\s*[^{]+)?)\s*\{",
+        r"\1\n{",
+        code,
+    )
+    code = re.sub(
+        r"(^[ \t]*function\s+&?[A-Za-z0-9_]+\s*\([^)]*\)(?:\s*:\s*[^{]+)?)\s*\{",
+        r"\1\n{",
+        code,
+        flags=re.MULTILINE,
+    )
+
+    # Control structures: single space after keyword, opening brace on same line
+    code = re.sub(r"\b(if|elseif|while|for|foreach|switch)\s*\((.*?)\)\s*\{", r"\1 (\2) {", code)
+    code = re.sub(r"\}\s*else\s*\{", "} else {", code)
+    code = re.sub(r"\}\s*else\s+if\s*\(", "} elseif (", code)
+    code = re.sub(r"\}\s*elseif\s*\(", "} elseif (", code)
+    code = re.sub(r"\}\s*catch\s*\(", "} catch (", code)
+    code = re.sub(r"\}\s*finally\s*\{", "} finally {", code)
+
+    # Canonicalize casts
+    code = re.sub(r"\(\s*(int|integer|bool|boolean|float|double|string|array|object)\s*\)", r"(\1)", code)
+
+    # 3. Line-by-line 4-space indentation
+    raw_lines = code.split("\n")
+    formatted_lines: list[str] = []
+    indent_level = 0
+    in_block_comment = False
+
+    for line in raw_lines:
+        trimmed = line.strip()
+
+        # Handle multi-line comment /* ... */
+        if in_block_comment:
+            formatted_lines.append(" " * (indent_level * 4) + trimmed)
+            if "*/" in trimmed:
+                in_block_comment = False
+            continue
+
+        if trimmed.startswith("/*") and "*/" not in trimmed:
+            in_block_comment = True
+            formatted_lines.append(" " * (indent_level * 4) + trimmed)
+            continue
+
+        if not trimmed:
+            if formatted_lines and formatted_lines[-1] != "":
+                formatted_lines.append("")
+            continue
+
+        opens, closes = count_braces_ignoring_strings(trimmed)
+
+        # Count leading closing braces on this line
+        leading_closes = 0
+        idx = 0
+        while idx < len(trimmed):
+            if trimmed[idx] in ("}", ")"):
+                if trimmed[idx] == "}":
+                    leading_closes += 1
+                idx += 1
+                while idx < len(trimmed) and trimmed[idx] in " \t":
+                    idx += 1
+            else:
+                break
+
+        current_display_indent = max(0, indent_level - leading_closes)
+
+        formatted_lines.append(" " * (current_display_indent * 4) + trimmed)
+        indent_level = max(0, indent_level + opens - closes)
+
+    res = "\n".join(formatted_lines)
+
+    # 4. Spacing between sections
+    res = re.sub(r"(declare\(strict_types=1\);)\n(?!\n)", r"\1\n\n", res)
+    res = re.sub(r"(namespace\s+[^;]+;)\n(?!\n)", r"\1\n\n", res)
+    res = re.sub(r"([;\}])\n((?:[ \t]*(?:final\s+|abstract\s+)*(?:class|interface|trait|enum)\s+))", r"\1\n\n\2", res)
+    res = re.sub(r"([;\}])\n([ \t]*(?:(?:public|protected|private|static|final|abstract)\s+)+function\s+)", r"\1\n\n\2", res)
+
+    # Strip trailing whitespace on each line
+    res = "\n".join(l.rstrip() for l in res.splitlines())
+
+    # Pure PHP: strip closing `?>`
+    if res.startswith("<?php"):
+        res = re.sub(r"\n\s*\?>\s*$", "", res)
+
+    return res.strip() + "\n"
+
+
 def deobfuscate_yakpro(raw_code: str) -> str:
-    """Deobfuscate YAK Pro PHP source code into clean, structured PHP."""
+    """Deobfuscate YAK Pro PHP source code into clean, structured PER-compliant PHP."""
     code = clean_strings(raw_code)
 
     # Check if this file contains class/trait/interface/enum definitions
@@ -508,7 +765,7 @@ def deobfuscate_yakpro(raw_code: str) -> str:
         # Procedural script (e.g. functions.php, bg_get.php, index.php)
         res = deobfuscate_scope(code)
         res = re.sub(r"\bgoto\s+[a-zA-Z0-9_]+;\s*", "", res)
-        return res
+        return format_per_coding_style(res)
 
     # Class file: deobfuscate each method/function individually
     pattern = re.compile(
@@ -530,18 +787,14 @@ def deobfuscate_yakpro(raw_code: str) -> str:
             c = code[i]
             if escape:
                 escape = False
-                continue
-            if c == "\\":
+            elif c == "\\":
                 escape = True
-                continue
-            if in_quote:
+            elif in_quote:
                 if c == in_quote:
                     in_quote = None
-                continue
-            if c in ("'", '"'):
+            elif c in ("'", '"', "`"):
                 in_quote = c
-                continue
-            if c == "{":
+            elif c == "{":
                 depth += 1
             elif c == "}":
                 depth -= 1
@@ -570,7 +823,8 @@ def deobfuscate_yakpro(raw_code: str) -> str:
         last_pos = body_end
 
     out.append(code[last_pos:])
-    return "".join(out)
+    full_res = "".join(out)
+    return format_per_coding_style(full_res)
 
 
 def deobfuscate_file(input_path: Path, output_path: Path | None = None) -> tuple[bool, str]:
