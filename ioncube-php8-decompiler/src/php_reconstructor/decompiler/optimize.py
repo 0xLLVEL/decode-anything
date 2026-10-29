@@ -34,7 +34,27 @@ def optimize(node: php.PhpFile) -> php.PhpFile:
 def _optimize_stmts(stmts: list[php.Stmt]) -> list[php.Stmt]:
     stmts = _drop_redundant_gotos(stmts)
     stmts = [_optimize_stmt(stmt) for stmt in stmts]
+    stmts = _lift_terminating_else(stmts)
     return _drop_dead_code_after_terminal(stmts)
+
+
+def _lift_terminating_else(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    """If an `if` branch unconditionally terminates (return, throw, exit), its
+    `else` block does not need to be indented. Flatten it into the outer sequence.
+    """
+    out: list[php.Stmt] = []
+    for stmt in stmts:
+        if isinstance(stmt, php.IfStmt) and stmt.orelse:
+            then_term = bool(stmt.then and _stmt_terminates(stmt.then[-1]))
+            elifs_term = all(b and _stmt_terminates(b[-1]) for _, b in stmt.elifs)
+            if then_term and elifs_term:
+                orelse = stmt.orelse
+                stmt.orelse = []
+                out.append(stmt)
+                out.extend(_lift_terminating_else(orelse))
+                continue
+        out.append(stmt)
+    return out
 
 
 def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
@@ -215,6 +235,12 @@ def _optimize_expr(expr: php.Expr) -> php.Expr:
                 arm.conds = [_optimize_expr(c) for c in arm.conds]
             arm.body = _optimize_expr(arm.body)
         return expr
+    if isinstance(expr, php.ClosureExpr):
+        expr.body = _prune_unreferenced_labels(_optimize_stmts(expr.body))
+        for p in expr.params:
+            if p.default is not None:
+                p.default = _optimize_expr(p.default)
+        return expr
     return expr
 
 
@@ -234,10 +260,10 @@ def _normalize_if(stmt: php.IfStmt) -> php.IfStmt:
     while (
         len(stmt.orelse) == 1
         and isinstance(stmt.orelse[0], php.IfStmt)
-        and not stmt.orelse[0].elifs
     ):
         inner = stmt.orelse[0]
         stmt.elifs.append((inner.cond, inner.then))
+        stmt.elifs.extend(inner.elifs)
         stmt.orelse = inner.orelse
     return stmt
 
