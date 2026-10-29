@@ -3,7 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from dump_plain_file_static import (
+from engines.ioncube.dumper import (
     _get_dll_candidates,
     _load_handler_tables,
     _load_resolver,

@@ -25,14 +25,14 @@ _SRC_DIR = _REPO_ROOT / "ioncube-php8-decompiler" / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from dump_plain_file_static import dump_file_to_ir
+from engines.ioncube import dump_file_to_ir
 from php_reconstructor.loader.json_loader import parse_dump
 from php_reconstructor.decompiler.program import decompile_program
 from php_reconstructor.decompiler.optimize import optimize
 from php_reconstructor.emitter.php_emitter import emit_php
 from php_reconstructor import ast as php
 from detector import scan_project, print_scan_report
-from yakpro_deobfuscator import is_yakpro_obfuscated, deobfuscate_yakpro
+from engines.yakpro import is_yakpro_obfuscated, deobfuscate_yakpro
 
 
 LARAVEL_FACADES = {
@@ -1187,7 +1187,7 @@ def decompile_file(
         print(f"\n[*] Decompiling: {input_path.name}")
     try:
         if is_sourceguardian_file(input_path):
-            from sg_bytecode_ir import decode_sg_file_to_ir
+            from engines.sourceguardian import decode_sg_file_to_ir
             icdump = decode_sg_file_to_ir(input_path)
             decompile_status = {"status": "ok", "encoder": "SourceGuardian"}
         elif not is_ioncube_file(input_path):

@@ -12,7 +12,7 @@ import struct
 
 import pytest
 
-from sg_container_decode import (
+from engines.sourceguardian.container import (
     Blowfish,
     SGError,
     build_candidates,

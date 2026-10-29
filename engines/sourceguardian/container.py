@@ -372,14 +372,17 @@ def build_candidates(keys: tuple[bytes, ...] | list[bytes]) -> list[tuple[str, b
 
 def load_keys() -> tuple[bytes, ...]:
     try:
-        import sg_keys
-    except ImportError as exc:
-        raise SGError(
-            "sg_keys.py not found; run: python sg_key_extractor.py loader/*.win"
-        ) from exc
+        from . import keys as sg_keys
+    except ImportError:
+        try:
+            import sg_keys
+        except ImportError as exc:
+            raise SGError(
+                "keys.py / sg_keys.py not found; run: python tools/sg_key_extractor.py loader/*.win"
+            ) from exc
     keys = tuple(getattr(sg_keys, "SG_KEYS", ()))
     if not keys:
-        raise SGError("sg_keys.py exports no SG_KEYS")
+        raise SGError("keys.py exports no SG_KEYS")
     return keys
 
 

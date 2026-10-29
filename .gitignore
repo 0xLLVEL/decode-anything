@@ -32,6 +32,7 @@ reports/
 
 # SourceGuardian loader keys, local only on every branch
 sg_keys.py
+engines/sourceguardian/keys.py
 
 
 # Virtual Environments

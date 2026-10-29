@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from decode_php_body import LoaderHandlerTables, LoaderInternedStringResolver
-from dump_plain_file_static import _get_dll_candidates
+from engines.ioncube.body import LoaderHandlerTables, LoaderInternedStringResolver
+from engines.ioncube.dumper import _get_dll_candidates
 
 VERSIONS = (81, 82, 83, 84)
 

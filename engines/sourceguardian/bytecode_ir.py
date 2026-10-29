@@ -17,9 +17,7 @@ import os
 import struct
 import sys
 from pathlib import Path
-from typing import Any
-
-from sg_container_decode import decode_bytes, decode_file, SGError
+from .container import decode_bytes, decode_file, SGError
 
 
 # ── PHP 8.1 opcode names, from Zend/zend_vm_opcodes.h ──────────────────────

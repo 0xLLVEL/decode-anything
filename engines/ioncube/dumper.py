@@ -20,13 +20,13 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from decode_hrc_header import decode_file, decode_payload_body, read_encoded_payload
-from loader_static_to_icdump_ir import (
+from .header import decode_file, decode_payload_body, read_encoded_payload
+from .adapter import (
     build_op_array_entry,
     resolve_function_calls,
     safe_value,
 )
-from decode_php_body import (
+from .body import (
     LoaderHandlerTables,
     LoaderInternedStringResolver,
     apply_php81_handler_opcode_decode,
@@ -49,11 +49,11 @@ def _get_dll_candidates(dll_path: Path | None, php_version: int = 81) -> list[Pa
     if dll_path:
         return [dll_path]
     ver_str = f"{php_version // 10}.{php_version % 10}"
-    base = Path(__file__).resolve().parent
+    repo_root = Path(__file__).resolve().parents[2]
     candidates = [
-        base / "loader" / f"ioncube_loader_win_{ver_str}.dll",
-        base / f"ioncube_loader_win_{ver_str}.dll",
-        base.parents[1] / "runtime" / "ext" / f"ioncube_loader_win_{ver_str}.dll",
+        repo_root / "loader" / f"ioncube_loader_win_{ver_str}.dll",
+        repo_root / f"ioncube_loader_win_{ver_str}.dll",
+        repo_root.parent / "runtime" / "ext" / f"ioncube_loader_win_{ver_str}.dll",
     ]
     return [p for p in candidates if p.exists()]
 

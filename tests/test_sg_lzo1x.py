@@ -1,7 +1,7 @@
 """Tests for the standalone sg_lzo1x decompressor."""
 
 import pytest
-from sg_lzo1x import lzo1x_decompress
+from engines.sourceguardian import lzo1x_decompress
 
 
 def test_lzo1x_empty():

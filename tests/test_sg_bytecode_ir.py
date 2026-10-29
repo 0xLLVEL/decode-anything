@@ -3,7 +3,7 @@
 import struct
 import pytest
 
-from sg_bytecode_ir import (
+from engines.sourceguardian.bytecode_ir import (
     StreamReader,
     ParseError,
     container_to_icdump,
@@ -401,7 +401,7 @@ def _cbc_encrypt(cipher, data: bytes) -> bytes:
 
 
 def _seal_section(key: bytes, raw_section: bytes) -> bytes:
-    from sg_container_decode import Blowfish, rol1
+    from engines.sourceguardian.container import Blowfish, rol1
     compressed = encode_literal_lzo(raw_section)
     declen = len(raw_section)
     length = 12 + len(compressed) + 3
@@ -413,7 +413,7 @@ def _seal_section(key: bytes, raw_section: bytes) -> bytes:
 
 
 def test_full_sg_file_end_to_end_decompile(tmp_path):
-    from sg_container_decode import load_keys
+    from engines.sourceguardian.container import load_keys
     from decompile import decompile_file
     import base64
 

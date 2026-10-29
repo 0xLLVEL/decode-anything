@@ -161,13 +161,11 @@ All 98 test cases pass:
 
 - [`decompile.py`](decompile.py) — Unified CLI entry point for scanning, single-file, and directory batch decompilation.
 - [`detector/`](detector/) — Multi-encoder signature scanner and format analyzer.
-- [`yakpro_deobfuscator.py`](yakpro_deobfuscator.py) — YAK Pro control-flow graph (CFG) restructurer, goto-remover, and string de-escaper.
-- [`sg_container_decode.py`](sg_container_decode.py) — SourceGuardian Blowfish-CBC & ROL1 envelope decryptor.
-- [`sg_lzo1x.py`](sg_lzo1x.py) — Standalone pure-Python LZO1X decompressor matching SourceGuardian loader specifications.
-- [`sg_bytecode_ir.py`](sg_bytecode_ir.py) — SourceGuardian body bytecode parser and adapter to `icdump-ir-v1`.
-- [`dump_plain_file_static.py`](dump_plain_file_static.py) — Static IonCube opcode dumper and interned-string decipherer.
-- [`decode_php_body.py`](decode_php_body.py) — Low-level Zend record deserializer and dynamic cipher0 decryptor.
-- [`decode_hrc_header.py`](decode_hrc_header.py) — Parser for IonCube file headers and payload offsets.
+- [`engines/`](engines/) — Core decompiler and deobfuscator engines:
+  - [`engines/ioncube/`](engines/ioncube/) — Static IonCube PHP 8.1–8.4 opcode dumper, header parser, and loader symbol resolver (`header.py`, `body.py`, `dumper.py`, `adapter.py`).
+  - [`engines/sourceguardian/`](engines/sourceguardian/) — Static SourceGuardian envelope decryptor, LZO1X inflator, and bytecode IR parser (`container.py`, `bytecode_ir.py`, `lzo1x.py`).
+  - [`engines/yakpro/`](engines/yakpro/) — YAK Pro control-flow graph (CFG) restructurer, goto-eliminator, and string de-escaper (`deobfuscator.py`).
+- [`tools/`](tools/) — Reverse-engineering utilities and loader extractor scripts.
 - [`ioncube-php8-decompiler/`](ioncube-php8-decompiler/) — High-level PHP abstract syntax tree (AST) engine:
   - `src/php_reconstructor/decompiler/` — Opcode handlers, CFG structurer, and optimization passes.
   - `src/php_reconstructor/emitter/` — High-fidelity PHP code emitter.
@@ -181,7 +179,7 @@ All 98 test cases pass:
 
 ### 1. 🛡️ SourceGuardian (ixed) Decoder
 - [x] Envelope decryption and payload extraction for SourceGuardian containers (Blowfish-CBC + ROL1 + LZO1X).
-- [x] Static Zend bytecode disassembler and container parser (`sg_bytecode_ir.py`).
+- [x] Static Zend bytecode disassembler and container parser (`engines/sourceguardian/bytecode_ir.py`).
 - [x] Direct bridge to unified `icdump-ir-v1` format.
 - [ ] Expand opcode dictionary coverage for legacy PHP 7.0–7.4 and PHP 8.2–8.4 ixed variants.
 

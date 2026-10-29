@@ -3,7 +3,7 @@
 import shutil
 import subprocess
 import pytest
-from yakpro_deobfuscator import (
+from engines.yakpro.deobfuscator import (
     is_yakpro_obfuscated,
     clean_strings,
     strip_outer_negation,

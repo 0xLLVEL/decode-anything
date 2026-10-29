@@ -1,6 +1,6 @@
 """Regression tests for CFG deobfuscation."""
 
-from dump_plain_file_static import (
+from engines.ioncube.dumper import (
     _drop_self_target_conditionals,
     deobfuscate_cfg,
 )

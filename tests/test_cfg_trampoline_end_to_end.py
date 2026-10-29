@@ -17,7 +17,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "ioncube-php8-decompiler" / "src"
 sys.path.insert(0, str(SRC))
 
-from dump_plain_file_static import deobfuscate_cfg  # noqa: E402
+from engines.ioncube.dumper import deobfuscate_cfg  # noqa: E402
 from php_reconstructor.decompiler import decompile_program, optimize  # noqa: E402
 from php_reconstructor.emitter import emit_php  # noqa: E402
 from php_reconstructor.loader import parse_dump  # noqa: E402
