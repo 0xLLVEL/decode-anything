@@ -1395,7 +1395,7 @@ def main() -> int:
         else:
             out_file = f.with_name(f"{f.stem}.reconstructed.php")
 
-        print(f"[{idx}/{len(protected_files)}] ({pct:5.1f}%) {rel} ... ", end="", flush=True)
+        print(f"[{idx}/{len(ioncube_files)}] ({pct:5.1f}%) {rel} ... ", end="", flush=True)
 
         success, syntax_ok, err, status = decompile_file(
             f,
