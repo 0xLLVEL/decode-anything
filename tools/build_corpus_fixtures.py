@@ -54,6 +54,22 @@ def zval_string(value: str) -> bytes:
     return u32(6) + u32(0) + zstr(value)
 
 
+def zval_undef() -> bytes:
+    return u32(0) + u32(0)
+
+
+def class_type_info(name: str, nullable: bool = False) -> bytes:
+    return u32(0x10000000 | (0x2 if nullable else 0)) + zstr(name)
+
+
+def builtin_type_info(mask: int, nullable: bool = False) -> bytes:
+    return u32(mask | (0x2 if nullable else 0))
+
+
+def union_type_info(members: list[bytes], nullable: bool = False) -> bytes:
+    return u32(0x40000000 | (0x2 if nullable else 0)) + u32(len(members)) + b"".join(members)
+
+
 def opcode(
     number: int,
     *,
@@ -113,14 +129,19 @@ def op_array(
     return bytes(buf)
 
 
-def property_record(name: str, flags: int, default: bytes) -> bytes:
+def property_record(
+    name: str,
+    flags: int,
+    default: bytes,
+    type_info: bytes | None = None,
+) -> bytes:
     return (
         zstr(name)
         + u32(flags)
         + zstr(None)                 # mangled/typed name
         + zstr(None)                 # doc comment
         + default
-        + u32(0)                     # type info
+        + (type_info if type_info is not None else u32(0))
         + u32(0)                     # attributes
     )
 
@@ -230,6 +251,24 @@ def class_body() -> bytes:
         properties=[
             property_record("count", ZEND_ACC_PUBLIC | ZEND_ACC_STATIC, zval_int(1)),
             property_record("name", ZEND_ACC_PUBLIC, zval_string("world")),
+            property_record(
+                "created",
+                ZEND_ACC_PUBLIC,
+                zval_undef(),
+                type_info=class_type_info("DateTimeImmutable", nullable=True),
+            ),
+            property_record(
+                "id",
+                ZEND_ACC_PUBLIC | 0x80,  # readonly
+                zval_undef(),
+                type_info=builtin_type_info(0x40),  # MAY_BE_STRING
+            ),
+            property_record(
+                "value",
+                ZEND_ACC_PUBLIC,
+                zval_undef(),
+                type_info=union_type_info([u32(0x10), u32(0x40)], nullable=True),
+            ),
         ],
         static_properties=1,
         methods=[("greet", greet)],

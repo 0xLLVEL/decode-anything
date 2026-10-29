@@ -305,6 +305,9 @@ class PhpProperty:
     name: str
     visibility: str = "public"
     is_static: bool = False
+    is_readonly: bool = False
+    type_name: str | None = None
+    allow_null: bool = False
     has_default: bool = False
     default: Any = None
     doc_comment: str | None = None

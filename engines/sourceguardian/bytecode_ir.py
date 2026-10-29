@@ -672,6 +672,7 @@ def _parse_property_zval(r: StreamReader, ver: int) -> dict:
 _ZEND_ACC_PROTECTED = 0x02
 _ZEND_ACC_PRIVATE = 0x04
 _ZEND_ACC_STATIC = 0x10
+_ZEND_ACC_READONLY = 0x80
 _ZEND_ACC_FINAL = 0x20
 _ZEND_ACC_ABSTRACT = 0x40
 _ZEND_ACC_INTERFACE = 0x01
@@ -694,7 +695,82 @@ def _decode_property_flags(flags: int) -> dict:
         visibility = "protected"
     else:
         visibility = "public"
-    return {"visibility": visibility, "is_static": bool(flags & _ZEND_ACC_STATIC)}
+    return {
+        "visibility": visibility,
+        "is_static": bool(flags & _ZEND_ACC_STATIC),
+        "is_readonly": bool(flags & _ZEND_ACC_READONLY),
+    }
+
+
+# MAY_BE_<T> = 1 << IS_<T>, the low bits of a serialized zend_type mask.
+_ZEND_BUILTIN_TYPE_BITS = (
+    (1 << 4, "int"),
+    (1 << 5, "float"),
+    (1 << 6, "string"),
+    (1 << 7, "array"),
+    (1 << 8, "object"),
+    (1 << 9, "resource"),
+    (1 << 12, "callable"),
+    (1 << 13, "iterable"),
+    (1 << 14, "void"),
+    (1 << 16, "mixed"),
+    (1 << 17, "never"),
+    (1 << 18, "static"),
+)
+
+
+def _decode_type_mask(mask: int) -> tuple[str | None, bool]:
+    """Return ``(type_name, allow_null)`` for a serialized builtin type mask."""
+    builtin = mask & 0x00FFFFFF
+    allow_null = bool(builtin & (1 << 1))
+    names: list[str] = []
+    if builtin & (1 << 2) and builtin & (1 << 3):
+        names.append("bool")
+    elif builtin & (1 << 2):
+        names.append("false")
+    elif builtin & (1 << 3):
+        names.append("true")
+    for bit, name in _ZEND_BUILTIN_TYPE_BITS:
+        if builtin & bit:
+            names.append(name)
+    if not names:
+        return None, allow_null
+    if "mixed" in names:
+        return "mixed", False
+    if "void" in names:
+        return "void", False
+    if "never" in names:
+        return "never", False
+    return "|".join(names), allow_null
+
+
+def _read_type_info(r: StreamReader, ver: int) -> dict | None:
+    """Parse the SG type blob and return ``{type_name, allow_null}``."""
+    hi = r.read_u32()
+    if not hi:
+        return None
+    if hi & 0x40000000:
+        count = r.read_u32()
+        members: list[str] = []
+        for _ in range(count):
+            member_hi = r.read_u32() if ver >= 0x21 else hi
+            if (member_hi & 0x10000000) or ver < 0x21:
+                members.append(r.read_zstr() or "mixed")
+            elif member_hi & 0x40000000:
+                nested = _read_type_info(r, ver)
+                if nested and nested.get("type_name"):
+                    members.append(nested["type_name"])
+            else:
+                name, _ = _decode_type_mask(member_hi)
+                members.append(name or "mixed")
+        type_name = "|".join(dict.fromkeys(members)) or None
+        return {"type_name": type_name, "allow_null": bool(hi & 0x2)}
+    if hi & 0x11000000:
+        return {"type_name": r.read_zstr(), "allow_null": bool(hi & 0x2)}
+    type_name, allow_null = _decode_type_mask(hi)
+    if not type_name:
+        return None
+    return {"type_name": type_name, "allow_null": allow_null}
 
 
 def _parse_class_props(r: StreamReader, ver: int) -> dict:
@@ -709,7 +785,7 @@ def _parse_class_props(r: StreamReader, ver: int) -> dict:
         _read_prop_zstr(r)           # mangled/typed-property name
         doc_comment = _read_prop_zstr(r)
         default = _parse_property_zval(r, ver)
-        _skip_type_info(r, ver)
+        type_info = _read_type_info(r, ver)
         _skip_attributes(r, ver)
         if not name:
             continue
@@ -719,6 +795,9 @@ def _parse_class_props(r: StreamReader, ver: int) -> dict:
             "name": name,
             "flags_decoded": _decode_property_flags(flags),
             "is_static": index < static_count or bool(flags & _ZEND_ACC_STATIC),
+            "is_readonly": bool(flags & _ZEND_ACC_READONLY),
+            "type_name": type_info.get("type_name") if type_info else None,
+            "allow_null": bool(type_info.get("allow_null")) if type_info else False,
             "has_default_value": has_default,
             "default_value": _unwrap_zval(default) if has_default else None,
             "doc_comment": doc_comment,

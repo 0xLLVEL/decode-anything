@@ -205,12 +205,22 @@ class PhpEmitter:
         if decl.constants and (decl.properties or decl.methods):
             lines.append("")
         for prop in decl.properties:
-            prefix = prop.visibility
+            modifiers = prop.visibility
             if prop.is_static:
-                prefix += " static"
+                modifiers += " static"
+            if prop.is_readonly:
+                modifiers += " readonly"
+            type_prefix = ""
+            if prop.type:
+                if prop.is_nullable and "|" in prop.type:
+                    type_prefix = f"{prop.type}|null "
+                elif prop.is_nullable and prop.type not in ("mixed", "null", "void", "never"):
+                    type_prefix = f"?{prop.type} "
+                else:
+                    type_prefix = f"{prop.type} "
             default = f" = {self._expr(prop.default)}" if prop.default is not None else ""
             lines.extend(self._doc_comment(prop.doc_comment, inner))
-            lines.append(f"{inner}{prefix} ${prop.name}{default};")
+            lines.append(f"{inner}{modifiers} {type_prefix}${prop.name}{default};")
             first_member = False
         for index, method in enumerate(decl.methods):
             if index > 0 or not first_member:

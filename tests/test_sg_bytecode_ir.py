@@ -270,16 +270,34 @@ def test_synthetic_container_parse_and_decompile():
     assert "return 1;" in php_code
 
 
-def make_synthetic_property(name: str, flags: int, default: bytes, doc: str = None) -> bytes:
+def make_synthetic_property(
+    name: str,
+    flags: int,
+    default: bytes,
+    doc: str = None,
+    type_info: bytes = None,
+) -> bytes:
     return (
         zstr(name)
         + u32(flags)
         + zstr(None)     # mangled/typed name
         + zstr(doc)
         + default
-        + u32(0)         # type info
+        + (type_info if type_info is not None else u32(0))
         + u32(0)         # attributes
     )
+
+
+def class_type_info(name: str, nullable: bool = False) -> bytes:
+    return u32(0x10000000 | (0x2 if nullable else 0)) + zstr(name)
+
+
+def builtin_type_info(mask: int, nullable: bool = False) -> bytes:
+    return u32(mask | (0x2 if nullable else 0))
+
+
+def union_type_info(members: list[bytes], nullable: bool = False) -> bytes:
+    return u32(0x40000000 | (0x2 if nullable else 0)) + u32(len(members)) + b"".join(members)
 
 
 def make_synthetic_class(
@@ -611,5 +629,47 @@ def test_synthetic_abstract_class_flag_is_emitted():
 
     php_code = emit_php(optimize(decompile_program(parse_dump(ir))))
     assert "abstract class Base" in php_code
+
+
+def test_synthetic_typed_properties_keep_types_nullable_and_readonly():
+    undef = u32(0) + u32(0)
+    class_bytes = make_synthetic_class(
+        "Typed",
+        properties=[
+            make_synthetic_property(
+                "created",
+                0x01,
+                undef,
+                type_info=class_type_info("DateTimeImmutable", nullable=True),
+            ),
+            make_synthetic_property(
+                "id",
+                0x81,  # public readonly
+                undef,
+                type_info=builtin_type_info(0x40),  # MAY_BE_STRING
+            ),
+            make_synthetic_property(
+                "value",
+                0x01,
+                undef,
+                type_info=union_type_info([u32(0x10), u32(0x40)], nullable=True),
+            ),
+        ],
+    )
+
+    ir = build_ir(
+        make_synthetic_container([class_bytes], _main_return()),
+        source_file="typed.php",
+    )
+    cls = next(iter(ir["class_index"].values()))
+    assert cls["properties_merged"]["created"]["type_name"] == "DateTimeImmutable"
+    assert cls["properties_merged"]["created"]["allow_null"] is True
+    assert cls["properties_merged"]["id"]["is_readonly"] is True
+    assert cls["properties_merged"]["value"]["type_name"] == "int|string"
+
+    php_code = emit_php(optimize(decompile_program(parse_dump(ir))))
+    assert "public ?DateTimeImmutable $created;" in php_code
+    assert "public readonly string $id;" in php_code
+    assert "public int|string|null $value;" in php_code
 
 

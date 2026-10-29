@@ -123,6 +123,9 @@ def decompile_class(class_info: PhpClassInfo, program: Program) -> tuple[php.Cla
                 name=prop.name,
                 visibility=prop.visibility,
                 is_static=prop.is_static,
+                is_readonly=prop.is_readonly,
+                type=prop.type_name,
+                is_nullable=prop.allow_null,
                 default=literal_to_expr(prop.default) if prop.has_default else None,
                 doc_comment=prop.doc_comment,
             )

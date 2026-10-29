@@ -412,6 +412,9 @@ class PropertyDecl(Node):
     name: str = ""
     visibility: str = "public"
     is_static: bool = False
+    is_readonly: bool = False
+    type: str | None = None
+    is_nullable: bool = False
     default: Expr | None = None
     doc_comment: str | None = None
 
