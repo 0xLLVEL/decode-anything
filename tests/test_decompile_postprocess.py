@@ -175,6 +175,17 @@ def test_invert_condition_negates_without_changing_meaning(condition, expected):
     assert _invert_condition(condition) == expected
 
 
+def test_leaked_compiler_temps_keep_their_assignments_and_identity():
+    result = clean_php_source(
+        "<?php\n$a = $tmp3;\n$b = $tmp4;\nfoo($a, $b);\n"
+    )
+
+    assert "$a = $tmp3;" in result
+    assert "$b = $tmp4;" in result
+    assert "temp resolved" not in result
+    assert "$tempVal" not in result
+
+
 def test_empty_guard_with_compound_condition_inverts_every_term():
     code = (
         "<?php\n"

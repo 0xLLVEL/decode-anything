@@ -529,37 +529,6 @@ def _normalize_psr4_namespaces(
     return code
 
 
-def _resolve_leaked_temps(code: str) -> str:
-    """Universally resolve leaked compiler temps from multi-index expressions or loops."""
-    def repl_multi_index(m):
-        indent = m.group(1)
-        var1 = m.group(2)
-        expr = m.group(3)
-        var2 = m.group(4)
-        base_name = var1.lstrip('$') + 'Parts'
-        return (
-            f"{indent}${base_name} = {expr};\n"
-            f"{indent}{var1} = ${base_name}[0];\n"
-            f"{indent}{var2} = ${base_name}[1];"
-        )
-
-    code = re.sub(
-        r'^([ \t]*)(\$[A-Za-z0-9_]+)\s*=\s*(.*?\[\d+\])\[0\];\s*\n[ \t]*(\$[A-Za-z0-9_]+)\s*=\s*\$tmp\d+\[1\];',
-        repl_multi_index,
-        code,
-        flags=re.MULTILINE
-    )
-    code = re.sub(
-        r'^([ \t]*)(\$[A-Za-z0-9_]+)\s*=\s*([a-zA-Z0-9_\$->:()\[\]\'",\s]+)\[0\];\s*\n[ \t]*(\$[A-Za-z0-9_]+)\s*=\s*\$tmp\d+\[1\];',
-        repl_multi_index,
-        code,
-        flags=re.MULTILINE
-    )
-    code = re.sub(r'(\$[A-Za-z0-9_]+)\s*=\s*\$tmp\d+;', r'// \1 temp resolved', code)
-    code = re.sub(r'\$tmp\d+', '$tempVal', code)
-    return code
-
-
 def _extract_and_apply_imports(
     php_code: str,
     namespace: str | None = None,
@@ -843,9 +812,6 @@ def clean_php_source(raw_php: str) -> str:
     raw_php = _normalize_psr4_namespaces(
         raw_php, namespace=namespace, declared_classes=declared_classes
     )
-
-    # 4b. Resolve leaked compiler temporary variables ($tmpN)
-    raw_php = _resolve_leaked_temps(raw_php)
 
     # 4c. Clean dead consecutive returns
     lines = raw_php.splitlines()
