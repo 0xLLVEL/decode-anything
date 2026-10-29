@@ -21,6 +21,7 @@ from sg_container_decode import (
     decrypt_section,
     get_payload,
     lzo1x_decompress,
+    parse_metadata,
     parse_preheader,
     rol1,
 )
@@ -73,6 +74,20 @@ def _container(key: bytes, metadata: bytes, body: bytes) -> bytes:
     encrypted_metadata = _seal(key, _literal_stream(metadata), len(metadata))
     encrypted_body = _seal(key, _literal_stream(body), len(body))
     return _preheader(len(encrypted_metadata)) + encrypted_metadata + encrypted_body
+
+
+def _marked_container(key: bytes, metadata: bytes, bodies: list[bytes]) -> bytes:
+    encrypted_metadata = _seal(key, _literal_stream(metadata), len(metadata))
+    chunks = []
+    for index, body in enumerate(bodies):
+        sealed = _seal(key, _literal_stream(body), len(body))
+        chunks.append(struct.pack("<II", 0x51 + index, len(sealed)) + sealed)
+    return (
+        _preheader(len(encrypted_metadata))
+        + encrypted_metadata
+        + b"".join(chunks)
+        + b"\x00" * 4
+    )
 
 
 @pytest.mark.parametrize(
@@ -133,9 +148,17 @@ def test_synthetic_container_decodes_end_to_end() -> None:
     result = decode_bytes(_container(KEY_B, METADATA, BODY), KEYS)
     assert result["key"] == "commercial-key1"
     assert result["metadata"] == METADATA
-    assert result["body"] == BODY
+    assert result["bodies"] == [BODY]
     assert result["version"] == 0x21
     assert result["flags"] == 0x7
+
+
+def test_marked_body_list_is_walked_until_terminator() -> None:
+    bodies = [BODY, MAGIC + struct.pack("<II", 0x21, 0x0007) + b"second"]
+    result = decode_bytes(_marked_container(KEY_A, METADATA, bodies), KEYS)
+    assert result["key"] == "commercial-key0"
+    assert result["metadata"] == METADATA
+    assert result["bodies"] == bodies
 
 
 def test_container_with_unknown_key_is_rejected() -> None:
@@ -154,6 +177,42 @@ def test_candidates_cover_commercial_and_eval_modes() -> None:
     assert len(candidates) == 3 + 253
     assert candidates[3][1][:16] == KEY_B[:16]
     assert len(candidates[3][1]) == 17
+
+
+def test_metadata_tlv_covers_every_field_kind() -> None:
+    meta = (
+        b"\x02" + struct.pack("<I", 33) + b"A" * 32 + b"\x00"
+        + b"\x03" + struct.pack("<I", 4) + b"1234"
+        + b"\x00" + struct.pack("<I", 6) + b"Name\x00\x00"
+        + b"\x0a" + struct.pack("<I", 0xDEADBEEF)
+        + b"\x01" + b"\x00"
+        + b"\x06" + struct.pack("<I", 4) + b"kvWi"
+        + b"\xff"
+        + b"\x0d" + struct.pack("<I", 2)
+        + struct.pack("<I", 4) + b"foo\x00"
+        + struct.pack("<I", 4) + b"bar\x00"
+        + b"\xff"
+    )
+    parsed = parse_metadata(meta)
+    assert parsed["regkey"] == "A" * 32
+    assert parsed["size"] == len(meta)
+    machine, policy = parsed["records"]
+    assert [(field["tag"], field["kind"]) for field in machine] == [
+        (0x03, "bytes"),
+        (0x00, "bytes"),
+        (0x0A, "fixed4"),
+        (0x01, "fixed1"),
+        (0x06, "bytes"),
+    ]
+    assert machine[2]["value"] == 0xDEADBEEF
+    assert machine[3]["value"] == 0
+    assert policy[0]["items"] == [b"foo\x00", b"bar\x00"]
+
+
+def test_metadata_rejects_a_missing_terminator() -> None:
+    meta = b"\x02" + struct.pack("<I", 33) + b"A" * 32 + b"\x00" + b"\x03"
+    with pytest.raises(SGError):
+        parse_metadata(meta)
 
 
 def test_get_payload_strips_machine_prefix(tmp_path) -> None:
