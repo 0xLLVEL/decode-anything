@@ -875,11 +875,13 @@ def _calc_jump_targets(op: dict) -> list[int]:
             if val is not None and val != 0:
                 targets.append(int(val))
         elif name in ("ZEND_FE_FETCH_R", "ZEND_FE_FETCH_RW"):
-            val = op2.get("zend_value")
-            if val is not None and val != 0:
-                targets.append(int(val))
-            elif op.get("extended_value"):
-                targets.append(int(op["extended_value"]))
+            ext = op.get("extended_value")
+            if ext:
+                targets.append(int(ext))
+            else:
+                val = op2.get("zend_value")
+                if val is not None and val != 0 and op2.get("type_name") not in ("IS_CV", "IS_VAR"):
+                    targets.append(int(val))
 
     return targets
 
