@@ -30,6 +30,7 @@ from php_reconstructor.decompiler.optimize import optimize
 from php_reconstructor.emitter.php_emitter import emit_php
 from php_reconstructor import ast as php
 from detector import scan_project, print_scan_report
+from yakpro_deobfuscator import is_yakpro_obfuscated, deobfuscate_yakpro
 
 
 LARAVEL_FACADES = {
@@ -914,6 +915,15 @@ def is_ioncube_file(path: Path) -> bool:
         return False
 
 
+def is_yakpro_file(path: Path) -> bool:
+    """Check if a PHP file is obfuscated with YAK Pro."""
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        return is_yakpro_obfuscated(content)
+    except Exception:
+        return False
+
+
 def validate_php_syntax(php_file: Path) -> tuple[bool, str]:
     """Validate PHP syntax using `php -l`."""
     try:
@@ -922,6 +932,8 @@ def validate_php_syntax(php_file: Path) -> tuple[bool, str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         output = (res.stdout + res.stderr).strip()
@@ -1160,6 +1172,43 @@ def decompile_file(
     if not silent_header:
         print(f"\n[*] Decompiling: {input_path.name}")
     try:
+        if not is_ioncube_file(input_path):
+            raw_text = input_path.read_text(encoding="utf-8", errors="ignore")
+            if is_yakpro_obfuscated(raw_text):
+                if not silent_header:
+                    print(f"    [i] Detected YAK Pro obfuscation. Deobfuscating...")
+                final_code = deobfuscate_yakpro(raw_text)
+                preserve_on_failure = input_path.resolve() == output_path.resolve()
+                syntax_ok, structure_ok, msg, wrote = _write_output_atomically(
+                    output_path,
+                    final_code,
+                    preserve_on_failure=preserve_on_failure,
+                    check_structure=True,
+                )
+                if wrote:
+                    if not silent_header:
+                        print(f"    -> Output saved: {output_path.name} ({len(final_code)} bytes)")
+                else:
+                    if not silent_header:
+                        print(f"    [!] Original left untouched: {output_path}")
+                decompile_status = {
+                    "type": "yakpro",
+                    "syntax": {"ok": syntax_ok, "message": msg if not syntax_ok else ""},
+                    "structure": {"ok": structure_ok, "message": msg if not structure_ok else ""},
+                }
+                valid = syntax_ok and structure_ok
+                if valid:
+                    if not silent_header:
+                        print(f"    [+] Validation: PASS (valid PHP)")
+                elif not syntax_ok:
+                    if not silent_header:
+                        print(f"    [!] Syntax warning: {msg}")
+                else:
+                    if not silent_header:
+                        print(f"    [!] Structure warning: {msg}")
+                error_msg = None if wrote else (msg or "validation failed; original left untouched")
+                return wrote, valid, error_msg, decompile_status
+
         icdump, _, header_report = dump_file_to_ir(
             input_path,
             php_version=php_version,
@@ -1204,6 +1253,11 @@ def decompile_file(
         else:
             raw_code = emit_php(php_ast)
             final_code = clean_php_source(raw_code)
+            if is_yakpro_obfuscated(final_code):
+                try:
+                    final_code = deobfuscate_yakpro(final_code)
+                except Exception:
+                    pass
 
         preserve_on_failure = input_path.resolve() == output_path.resolve()
         syntax_ok, structure_ok, msg, wrote = _write_output_atomically(
@@ -1264,14 +1318,14 @@ def main() -> int:
         print_scan_report(report, as_json=args.json)
 
         if args.decompile and report.encoded_count > 0:
-            ioncube_items = [f for f in report.encoded_files if f.match.name == "ionCube"]
-            if ioncube_items:
+            target_items = [f for f in report.encoded_files if f.match.name in ("ionCube", "YAK Pro")]
+            if target_items:
                 decompile_failures = 0
                 validation_failures = 0
-                print(f"\n[*] Starting auto-decompilation of {len(ioncube_items)} ionCube file(s)...")
-                for idx, f_info in enumerate(ioncube_items, 1):
+                print(f"\n[*] Starting auto-decompilation of {len(target_items)} encoded/obfuscated file(s)...")
+                for idx, f_info in enumerate(target_items, 1):
                     out_f = (args.output / f_info.relative_path) if args.output else f_info.path.with_name(f"{f_info.path.stem}.reconstructed.php")
-                    print(f"[{idx}/{len(ioncube_items)}] Decompiling: {f_info.relative_path} ... ", end="", flush=True)
+                    print(f"[{idx}/{len(target_items)}] Decompiling: {f_info.relative_path} ... ", end="", flush=True)
                     ok, syn_ok, err, status = decompile_file(
                         f_info.path,
                         output_path=out_f,
@@ -1351,26 +1405,29 @@ def main() -> int:
     print("=" * 60)
 
     # 1. Scan directory
+    def is_protected_file(p: Path) -> bool:
+        return is_ioncube_file(p) or is_yakpro_file(p)
+
     if args.no_copy_other:
         print("[*] Fast scanning PHP files (--no-copy-other enabled)...")
-        ioncube_files = [
+        target_files = [
             f for f in input_path.rglob("*.php")
-            if f.is_file() and is_ioncube_file(f)
+            if f.is_file() and is_protected_file(f)
         ]
         other_files = []
-        all_files = ioncube_files
+        all_files = target_files
     else:
         all_files = [f for f in input_path.rglob("*") if f.is_file()]
-        ioncube_files = [f for f in all_files if f.suffix == ".php" and is_ioncube_file(f)]
-        other_files = [f for f in all_files if f not in ioncube_files]
+        target_files = [f for f in all_files if f.suffix == ".php" and is_protected_file(f)]
+        other_files = [f for f in all_files if f not in target_files]
 
     print(f"Found {len(all_files)} total file(s):")
-    print(f"  - {len(ioncube_files)} IonCube-protected PHP file(s)")
+    print(f"  - {len(target_files)} encoded/obfuscated PHP file(s)")
     if not args.no_copy_other:
         print(f"  - {len(other_files)} non-protected / asset file(s)")
 
-    if not ioncube_files:
-        print(f"\nNo IonCube-protected PHP files detected in: {input_path}")
+    if not target_files:
+        print(f"\nNo encoded or obfuscated PHP files detected in: {input_path}")
         return 0
 
     # 2. Copy other files if output directory specified
@@ -1385,14 +1442,14 @@ def main() -> int:
             copied_count += 1
         print(f"    -> Copied {copied_count} file(s).")
 
-    # 3. Decompile IonCube files
-    print(f"\n[*] Starting batch decompilation of {len(ioncube_files)} file(s)...\n")
+    # 3. Decompile target files
+    print(f"\n[*] Starting batch decompilation of {len(target_files)} file(s)...\n")
     start_time = time.time()
     results = []
 
-    for idx, f in enumerate(ioncube_files, 1):
+    for idx, f in enumerate(target_files, 1):
         rel = f.relative_to(input_path)
-        pct = (idx / len(ioncube_files)) * 100
+        pct = (idx / len(target_files)) * 100
 
         if args.output:
             out_file = args.output / rel
@@ -1405,7 +1462,7 @@ def main() -> int:
         else:
             out_file = f.with_name(f"{f.stem}.reconstructed.php")
 
-        print(f"[{idx}/{len(ioncube_files)}] ({pct:5.1f}%) {rel} ... ", end="", flush=True)
+        print(f"[{idx}/{len(target_files)}] ({pct:5.1f}%) {rel} ... ", end="", flush=True)
 
         success, syntax_ok, err, status = decompile_file(
             f,
@@ -1445,8 +1502,8 @@ def main() -> int:
     print("\n" + "=" * 60)
     print("  BATCH DECOMPILATION SUMMARY")
     print("=" * 60)
-    print(f"  Total IonCube files  : {len(ioncube_files)}")
-    print(f"  Successfully decoded : {success_count} / {len(ioncube_files)}")
+    print(f"  Total target files   : {len(target_files)}")
+    print(f"  Successfully decoded : {success_count} / {len(target_files)}")
     print(f"  Validation Valid     : {validation_pass_count} / {success_count}")
     print(f"  Partial decodes      : {len(partial_items)}")
     if args.output and not args.no_copy_other:

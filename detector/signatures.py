@@ -79,6 +79,23 @@ def _detect_php_bolt(header: bytes, content_sample: bytes) -> EncoderMatch | Non
     return None
 
 
+def _detect_yakpro(header: bytes, content_sample: bytes) -> EncoderMatch | None:
+    if b"Obfuscated by YAK Pro" in header or b"yakpro-po" in header or b"yakpro-po" in content_sample:
+        return EncoderMatch(
+            name="YAK Pro",
+            confidence=1.0,
+            details="YAK Pro PHP Obfuscator (Control flow flattening & string escapes)",
+        )
+    if b"goto " in content_sample and (b"\\x" in content_sample or b"\\0" in content_sample or b"\\1" in content_sample):
+        if content_sample.count(b"goto ") >= 4:
+            return EncoderMatch(
+                name="YAK Pro",
+                confidence=0.9,
+                details="YAK Pro statement shuffle & goto flattening detected",
+            )
+    return None
+
+
 def _detect_general_obfuscator(header: bytes, content_sample: bytes) -> EncoderMatch | None:
     # Yakpro-Po / general PHP scramblers
     if b"$$GLOBALS" in content_sample and content_sample.count(b"$$") > 5:
@@ -101,6 +118,7 @@ ENCODER_DETECTORS: list[Callable[[bytes, bytes], EncoderMatch | None]] = [
     _detect_sourceguardian,
     _detect_zend_guard,
     _detect_php_bolt,
+    _detect_yakpro,
     _detect_general_obfuscator,
 ]
 
