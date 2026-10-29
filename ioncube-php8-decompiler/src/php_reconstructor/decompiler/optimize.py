@@ -34,9 +34,12 @@ def optimize(node: php.PhpFile) -> php.PhpFile:
 def _optimize_stmts(stmts: list[php.Stmt]) -> list[php.Stmt]:
     stmts = _drop_redundant_gotos(stmts)
     stmts = [_optimize_stmt(stmt) for stmt in stmts]
+    stmts = _invert_guard_gotos(stmts)
+    stmts = _linearize_jump_chains(stmts)
     stmts = _reconstruct_switches(stmts)
     stmts = _lift_terminating_else(stmts)
-    return _drop_dead_code_after_terminal(stmts)
+    stmts = _drop_dead_code_after_terminal(stmts)
+    return _drop_redundant_gotos(stmts)
 
 
 def _lift_terminating_else(stmts: list[php.Stmt]) -> list[php.Stmt]:
@@ -313,17 +316,22 @@ def _stmt_terminates(stmt: php.Stmt) -> bool:
 def _drop_dead_code_after_terminal(stmts: list[php.Stmt]) -> list[php.Stmt]:
     """Prune unreachable statements that follow an unconditional terminal statement.
 
-    If any following statement is a LabelStmt, execution can jump to it via goto,
-    so subsequent statements are not dead code.
+    Skips unreachable statements following an unconditional terminal until the
+    next LabelStmt, which may be a jump target.
     """
     out: list[php.Stmt] = []
-    for idx, stmt in enumerate(stmts):
+    i = 0
+    n = len(stmts)
+    while i < n:
+        stmt = stmts[i]
         out.append(stmt)
         if _stmt_terminates(stmt):
-            remaining = stmts[idx + 1 :]
-            has_label = any(isinstance(s, php.LabelStmt) for s in remaining)
-            if not has_label:
-                break
+            j = i + 1
+            while j < n and not isinstance(stmts[j], php.LabelStmt):
+                j += 1
+            i = j
+            continue
+        i += 1
     return out
 
 
@@ -412,6 +420,331 @@ def _has_side_effects(expr: php.Expr) -> bool:
     if isinstance(expr, php.Cast):
         return _has_side_effects(expr.operand)
     return False
+
+
+def _get_def_use(stmt: php.Stmt) -> tuple[set[str], set[str]]:
+    defs: set[str] = set()
+    uses: set[str] = set()
+
+    def walk_expr(e: php.Expr | None) -> None:
+        if e is None:
+            return
+        if isinstance(e, php.Variable):
+            uses.add(e.name)
+        elif isinstance(e, php.Assign):
+            walk_expr(e.value)
+            if isinstance(e.target, php.Variable):
+                defs.add(e.target.name)
+            elif isinstance(e.target, php.DimFetch) and isinstance(e.target.target, php.Variable):
+                dim_name = f"{e.target.target.name}['{getattr(e.target.index, 'value', '')}']"
+                defs.add(dim_name)
+                uses.add(e.target.target.name)
+            else:
+                walk_expr(e.target)
+        elif isinstance(e, php.BinaryOp):
+            walk_expr(e.left)
+            walk_expr(e.right)
+        elif isinstance(e, php.UnaryOp):
+            walk_expr(e.operand)
+        elif isinstance(e, (php.FuncCall, php.MethodCall, php.StaticCall, php.New)):
+            for a in e.args:
+                walk_expr(a)
+            if hasattr(e, "target"):
+                walk_expr(getattr(e, "target"))
+        elif isinstance(e, php.DimFetch):
+            if isinstance(e.target, php.Variable):
+                dim_name = f"{e.target.name}['{getattr(e.index, 'value', '')}']"
+                uses.add(dim_name)
+            walk_expr(e.target)
+            if e.index:
+                walk_expr(e.index)
+        elif isinstance(e, php.PropertyFetch):
+            walk_expr(e.target)
+        elif isinstance(e, php.ArrayLiteral):
+            for it in e.items:
+                walk_expr(it.value)
+                if it.key:
+                    walk_expr(it.key)
+        elif isinstance(e, php.Ternary):
+            walk_expr(e.cond)
+            if e.if_true:
+                walk_expr(e.if_true)
+            walk_expr(e.if_false)
+
+    if isinstance(stmt, php.ExprStmt):
+        walk_expr(stmt.expr)
+    elif isinstance(stmt, php.ReturnStmt) and stmt.value:
+        walk_expr(stmt.value)
+    elif isinstance(stmt, php.IfStmt):
+        walk_expr(stmt.cond)
+    elif isinstance(stmt, php.SwitchStmt):
+        walk_expr(stmt.subject)
+
+    return defs, uses
+
+
+def _invert_guard_gotos(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    """Invert guard gotos into structured control flow.
+
+    Handles:
+    - Flattening nested single-goto ifs: if (A) { if (B) { goto L; } } -> if (A && B) { goto L; }
+    - Pattern 1: if (C) goto L; body; L: -> if (!C) { body } L:
+    - Pattern 2: if (C) goto L; T; L: -> if (!C) { T; } L: (where T is terminal)
+    - Pattern 3: L: if (C) goto L; rest... -> if (!C) { rest... }
+    """
+    out1: list[php.Stmt] = []
+    for s in stmts:
+        if (
+            isinstance(s, php.IfStmt)
+            and not s.elifs
+            and not s.orelse
+            and len(s.then) == 1
+            and isinstance(s.then[0], php.IfStmt)
+        ):
+            inner = s.then[0]
+            if (
+                not inner.elifs
+                and not inner.orelse
+                and len(inner.then) == 1
+                and isinstance(inner.then[0], php.GotoStmt)
+            ):
+                comb_cond = php.BinaryOp(op="&&", left=s.cond, right=inner.cond)
+                s = php.IfStmt(cond=comb_cond, then=inner.then)
+        out1.append(s)
+
+    stmts = out1
+    out: list[php.Stmt] = []
+    i = 0
+    n = len(stmts)
+    while i < n:
+        s = stmts[i]
+
+        # Pattern 3: Loop-tail backward guard
+        # L: if (C) goto L; rest... -> if (!C) { rest... }
+        if (
+            isinstance(s, php.LabelStmt)
+            and i + 1 < n
+            and isinstance(stmts[i + 1], php.IfStmt)
+        ):
+            nxt = stmts[i + 1]
+            if (
+                not nxt.elifs
+                and not nxt.orelse
+                and len(nxt.then) == 1
+                and isinstance(nxt.then[0], php.GotoStmt)
+                and nxt.then[0].label == s.label
+            ):
+                rest = stmts[i + 2 :]
+                if rest and not any(isinstance(r, php.LabelStmt) for r in rest):
+                    new_if = php.IfStmt(cond=_negate(nxt.cond), then=rest)
+                    out.append(new_if)
+                    i = n
+                    break
+
+        # Pattern 1 & 2: Forward guard
+        # if (C) goto L; ...
+        if (
+            isinstance(s, php.IfStmt)
+            and not s.elifs
+            and not s.orelse
+            and len(s.then) == 1
+            and isinstance(s.then[0], php.GotoStmt)
+        ):
+            target_label = s.then[0].label
+
+            # Pattern 2: if (C) goto L; T; L: where T is terminal
+            if (
+                i + 2 < n
+                and isinstance(stmts[i + 1], (php.BreakStmt, php.ContinueStmt, php.ReturnStmt, php.ThrowStmt))
+                and isinstance(stmts[i + 2], php.LabelStmt)
+                and stmts[i + 2].label == target_label
+            ):
+                term_stmt = stmts[i + 1]
+                new_if = php.IfStmt(cond=_negate(s.cond), then=[term_stmt])
+                out.append(new_if)
+                out.append(stmts[i + 2])
+                i += 3
+                continue
+
+            # Pattern 1: if (C) goto L; body; L: where body does not terminate/jump
+            j = i + 1
+            while j < n and not (isinstance(stmts[j], php.LabelStmt) and stmts[j].label == target_label):
+                if isinstance(stmts[j], (php.LabelStmt, php.GotoStmt)) or _stmt_terminates(stmts[j]):
+                    break
+                j += 1
+
+            if j < n and isinstance(stmts[j], php.LabelStmt) and stmts[j].label == target_label:
+                body = stmts[i + 1 : j]
+                if body:
+                    new_if = php.IfStmt(cond=_negate(s.cond), then=body)
+                    out.append(new_if)
+                    out.append(stmts[j])
+                    i = j + 1
+                    continue
+
+        out.append(s)
+        i += 1
+    return out
+
+
+def _linearize_jump_chains(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    blocks: list[dict] = []
+    curr_labels: list[str] = []
+    curr_stmts: list[php.Stmt] = []
+
+    for s in stmts:
+        if isinstance(s, php.LabelStmt):
+            if curr_stmts:
+                blocks.append({"labels": curr_labels, "stmts": curr_stmts})
+                curr_labels = [s.label]
+                curr_stmts = []
+            else:
+                curr_labels.append(s.label)
+        else:
+            curr_stmts.append(s)
+            if _stmt_terminates(s) or isinstance(s, php.GotoStmt):
+                blocks.append({"labels": curr_labels, "stmts": curr_stmts})
+                curr_labels = []
+                curr_stmts = []
+    if curr_labels or curr_stmts:
+        blocks.append({"labels": curr_labels, "stmts": curr_stmts})
+
+    if len(blocks) <= 1:
+        return stmts
+
+    label_to_idx: dict[str, int] = {}
+    for idx, b in enumerate(blocks):
+        b_defs: set[str] = set()
+        b_uses: set[str] = set()
+        for s in b["stmts"]:
+            d, u = _get_def_use(s)
+            b_uses |= (u - b_defs)
+            b_defs |= d
+        b["defs"] = b_defs
+        b["uses"] = b_uses
+        b["is_exit"] = any(isinstance(s, php.ReturnStmt) for s in b["stmts"])
+        b["goto_target"] = (
+            b["stmts"][-1].label
+            if b["stmts"] and isinstance(b["stmts"][-1], php.GotoStmt)
+            else None
+        )
+        for l in b["labels"]:
+            label_to_idx[l] = idx
+
+    entry_jump = None
+    if len(blocks[0]["stmts"]) == 1 and isinstance(blocks[0]["stmts"][0], php.GotoStmt):
+        entry_jump = blocks[0]["stmts"][0].label
+
+    if entry_jump and entry_jump in label_to_idx:
+        entry_idx = label_to_idx[entry_jump]
+        n = len(blocks)
+        adj: dict[int, set[int]] = {i: set() for i in range(n)}
+        in_degree: dict[int, int] = {i: 0 for i in range(n)}
+
+        def add_edge(u: int, v: int) -> None:
+            if u != v and v not in adj[u]:
+                adj[u].add(v)
+                in_degree[v] += 1
+
+        for i in range(n):
+            for j in range(n):
+                if i != j and (blocks[i]["defs"] & blocks[j]["uses"]):
+                    add_edge(i, j)
+
+        for i in range(n):
+            if i != 0 and i != entry_idx:
+                add_edge(entry_idx, i)
+
+        for i in range(n):
+            if not blocks[i]["is_exit"]:
+                for j in range(n):
+                    if blocks[j]["is_exit"]:
+                        add_edge(i, j)
+
+        available = [i for i in range(n) if in_degree[i] == 0 and i != 0]
+        sorted_indices: list[int] = []
+        prev_goto = None
+
+        while available:
+            next_pick = None
+            if prev_goto and prev_goto in label_to_idx and label_to_idx[prev_goto] in available:
+                next_pick = label_to_idx[prev_goto]
+                available.remove(next_pick)
+            else:
+                non_exit = [i for i in available if not blocks[i]["is_exit"]]
+                next_pick = non_exit[0] if non_exit else available[0]
+                available.remove(next_pick)
+
+            sorted_indices.append(next_pick)
+            prev_goto = blocks[next_pick]["goto_target"]
+
+            for neighbor in sorted(adj[next_pick]):
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0 and neighbor != 0:
+                    available.append(neighbor)
+
+        for idx in range(n):
+            if idx != 0 and idx not in sorted_indices:
+                sorted_indices.append(idx)
+
+        def is_real_stmt(s: php.Stmt) -> bool:
+            return not isinstance(s, (php.GotoStmt, php.LabelStmt, php.OpcodeComment))
+
+        real_block_indices = [
+            idx for idx in sorted_indices if any(is_real_stmt(s) for s in blocks[idx]["stmts"])
+        ]
+
+        reordered: list[php.Stmt] = []
+        for idx in real_block_indices:
+            b = blocks[idx]
+            for s in b["stmts"]:
+                if isinstance(s, php.GotoStmt):
+                    continue
+                reordered.append(s)
+        return reordered
+
+    # Standard linear jump chaining when no entry jump
+    goto_edges: dict[int, int] = {}
+    block_in_degree: dict[int, int] = {i: 0 for i in range(len(blocks))}
+
+    for src_idx, b in enumerate(blocks):
+        if b["goto_target"] and b["goto_target"] in label_to_idx:
+            tgt_idx = label_to_idx[b["goto_target"]]
+            block_in_degree[tgt_idx] += 1
+            goto_edges[src_idx] = tgt_idx
+
+    is_chained: set[int] = set()
+    next_block: dict[int, int] = {}
+    for src_idx, tgt_idx in goto_edges.items():
+        if block_in_degree[tgt_idx] == 1 and tgt_idx != 0:
+            next_block[src_idx] = tgt_idx
+            is_chained.add(tgt_idx)
+
+    order: list[int] = []
+    visited: set[int] = set()
+
+    def visit(idx: int) -> None:
+        curr: int | None = idx
+        while curr is not None and curr not in visited:
+            visited.add(curr)
+            order.append(curr)
+            curr = next_block.get(curr)
+
+    visit(0)
+    for idx in range(len(blocks)):
+        if idx not in visited and idx not in is_chained:
+            visit(idx)
+    for idx in range(len(blocks)):
+        if idx not in visited:
+            visit(idx)
+
+    reordered_std: list[php.Stmt] = []
+    for idx in order:
+        b = blocks[idx]
+        for l in b["labels"]:
+            reordered_std.append(php.LabelStmt(label=l))
+        reordered_std.extend(b["stmts"])
+    return reordered_std
 
 
 def _drop_redundant_gotos(stmts: list[php.Stmt]) -> list[php.Stmt]:
