@@ -199,13 +199,28 @@ def _op(tp: int, **kw) -> dict:
     return base
 
 
+def _unwrap_zval(z: Any) -> Any:
+    if isinstance(z, dict):
+        if "type" in z and "value" in z and len(z) <= 3:
+            return _unwrap_zval(z["value"])
+        keys = list(z.keys())
+        if keys and all(k.isdigit() for k in keys):
+            int_keys = [int(k) for k in keys]
+            if sorted(int_keys) == list(range(len(int_keys))):
+                return [_unwrap_zval(z[str(i)]) for i in range(len(int_keys))]
+        return {k: _unwrap_zval(v) for k, v in z.items()}
+    if isinstance(z, list):
+        return [_unwrap_zval(v) for v in z]
+    return z
+
+
 def _make_operand(tp_byte: int, raw_idx: int, zend_val: int, cv_names: list, literals: list) -> dict:
     t = tp_byte & 0xF
     o = _op(t, zend_value=zend_val)
     if t == IS_CONST:
         o['literal_index'] = raw_idx
         if 0 <= raw_idx < len(literals):
-            o['literal_value'] = literals[raw_idx].get('value')
+            o['literal_value'] = _unwrap_zval(literals[raw_idx])
     elif t == IS_CV:
         o['variable_index'] = raw_idx
         name = cv_names[raw_idx] if 0 <= raw_idx < len(cv_names) else f'cv{raw_idx}'
@@ -909,10 +924,7 @@ def _normalize_oparray(
     vars_dict = {str(i): name for i, name in enumerate(cv_names)}
 
     raw_literals = oa.get("literals", [])
-    literals = [
-        lit.get("value") if isinstance(lit, dict) and "value" in lit else lit
-        for lit in raw_literals
-    ]
+    literals = [_unwrap_zval(lit) for lit in raw_literals]
 
     normalized_ops = []
     for raw_op in oa.get("opcodes", []):

@@ -491,6 +491,19 @@ class PhpEmitter:
                 if decoded is not None:
                     return self._array(_ioncube_to_array_literal(decoded))
             return _quote_string(value)
+        if isinstance(value, (list, tuple)):
+            items = [php.ArrayItem(value=php.Literal(value=v)) for v in value]
+            return self._array(php.ArrayLiteral(items=items))
+        if isinstance(value, dict):
+            keys = list(value.keys())
+            if keys and all((isinstance(k, int) or (isinstance(k, str) and k.isdigit())) for k in keys):
+                int_keys = [int(k) for k in keys]
+                if sorted(int_keys) == list(range(len(int_keys))):
+                    ordered_keys = keys if isinstance(keys[0], int) else [str(i) for i in range(len(keys))]
+                    items = [php.ArrayItem(value=php.Literal(value=value[k])) for k in ordered_keys]
+                    return self._array(php.ArrayLiteral(items=items))
+            items = [php.ArrayItem(key=php.Literal(value=k), value=php.Literal(value=v)) for k, v in value.items()]
+            return self._array(php.ArrayLiteral(items=items))
         return f"/* unrepresentable literal */ null"
 
 
