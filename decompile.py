@@ -906,10 +906,10 @@ def _reindent_php(code: str) -> str:
 
 
 def is_ioncube_file(path: Path) -> bool:
-    """Check if a file contains the IonCube header/marker."""
+    """Check if a file contains the IonCube binary header marker (HR+c)."""
     try:
-        content = path.read_bytes()[:1024]
-        return b"HR+c" in content or b"ionCube Loader" in content
+        content = path.read_bytes()[:2048]
+        return b"HR+c" in content
     except Exception:
         return False
 
@@ -1351,13 +1351,23 @@ def main() -> int:
     print("=" * 60)
 
     # 1. Scan directory
-    all_files = [f for f in input_path.rglob("*") if f.is_file()]
-    ioncube_files = [f for f in all_files if f.suffix == ".php" and is_ioncube_file(f)]
-    other_files = [f for f in all_files if f not in ioncube_files]
+    if args.no_copy_other:
+        print("[*] Fast scanning PHP files (--no-copy-other enabled)...")
+        ioncube_files = [
+            f for f in input_path.rglob("*.php")
+            if f.is_file() and is_ioncube_file(f)
+        ]
+        other_files = []
+        all_files = ioncube_files
+    else:
+        all_files = [f for f in input_path.rglob("*") if f.is_file()]
+        ioncube_files = [f for f in all_files if f.suffix == ".php" and is_ioncube_file(f)]
+        other_files = [f for f in all_files if f not in ioncube_files]
 
     print(f"Found {len(all_files)} total file(s):")
     print(f"  - {len(ioncube_files)} IonCube-protected PHP file(s)")
-    print(f"  - {len(other_files)} non-protected / asset file(s)")
+    if not args.no_copy_other:
+        print(f"  - {len(other_files)} non-protected / asset file(s)")
 
     if not ioncube_files:
         print(f"\nNo IonCube-protected PHP files detected in: {input_path}")
