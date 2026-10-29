@@ -9,7 +9,8 @@ import re
 
 from ..utils import is_valid_php_identifier
 
-_TYPE_NAME_RE = re.compile(r"^\\?[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*$")
+_TYPE_PART_RE = r"\\?[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*"
+_TYPE_NAME_RE = re.compile(rf"^\??{_TYPE_PART_RE}(\|{_TYPE_PART_RE})*$")
 
 
 def _sane_type(type_name: str | None) -> str | None:

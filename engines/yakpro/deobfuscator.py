@@ -596,6 +596,15 @@ def split_statements_per(code: str) -> str:
 
         # Opening brace at paren depth 0: start of block, split if not an empty block `{}`
         if paren_depth == 0 and c == "{":
+            # Check if this brace is variable property/variable access e.g. ->{$prop} or ${var}
+            k = i - 1
+            while k >= 0 and code[k] in " \t":
+                k -= 1
+            if k >= 0 and code[k] in (">", "$"):
+                out.append("{")
+                i += 1
+                continue
+
             out.append("{")
             j = i + 1
             while j < n and code[j] in " \t":
@@ -615,7 +624,7 @@ def split_statements_per(code: str) -> str:
                 j += 1
             if j < n and code[j] not in "\r\n":
                 rest = code[j:]
-                allowed_cont = ("else", "elseif", "catch", "finally", "while", ")", ";", ",", "]", "->")
+                allowed_cont = ("else", "elseif", "catch", "finally", "while", ")", ";", ",", "]", "->", "?->", "=")
                 if not any(rest.startswith(ac) for ac in allowed_cont):
                     out.append("\n")
                     i = j - 1

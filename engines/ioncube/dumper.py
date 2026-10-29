@@ -683,10 +683,10 @@ def _parse_try_catch_records(raw_bytes: bytes) -> list[dict]:
     for i in range(count):
         t, c, f, fe = struct.unpack_from("<IIII", raw_bytes, i * 16)
         entries.append({
-            "try_op":      t - 1 if t else 0,
-            "catch_op":    (c - 1) if c else None,
-            "finally_op":  (f - 1) if f else None,
-            "finally_end": (fe - 1) if fe else None,
+            "try_op":      t,
+            "catch_op":    c if c else None,
+            "finally_op":  f if f else None,
+            "finally_end": fe if fe else None,
         })
     return entries
 

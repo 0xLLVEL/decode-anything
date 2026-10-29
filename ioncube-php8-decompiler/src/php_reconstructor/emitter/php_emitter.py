@@ -249,7 +249,7 @@ class PhpEmitter:
         for param in params:
             parts = []
             if param.type:
-                parts.append(("?" if param.nullable else "") + param.type)
+                parts.append(self._render_type_hint(param.type, param.nullable))
             name = "$" + param.name
             if param.variadic:
                 name = "..." + name
@@ -262,10 +262,23 @@ class PhpEmitter:
             rendered.append(text)
         return ", ".join(rendered)
 
+    def _render_type_hint(self, type_hint: str, nullable: bool) -> str:
+        if not type_hint:
+            return ""
+        if type_hint in ("mixed", "void", "never"):
+            return type_hint
+        if "|" in type_hint:
+            types = type_hint.split("|")
+            if nullable and "null" not in types:
+                return f"{type_hint}|null"
+            return type_hint
+        return f"{'?' if nullable else ''}{type_hint}"
+
     def _return_type(self, return_type: str | None, nullable: bool) -> str:
         if not return_type:
             return ""
-        return f": {'?' if nullable else ''}{return_type}"
+        rendered = self._render_type_hint(return_type, nullable)
+        return f": {rendered}" if rendered else ""
 
     def _doc_comment(self, doc: str | None, pad: str) -> list[str]:
         if not doc or not isinstance(doc, str):

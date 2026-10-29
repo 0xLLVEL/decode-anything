@@ -309,6 +309,13 @@ def _zend_type_name(mask: int) -> "tuple[str | None, bool]":
             names.append(name)
     if not names:                                            # class type (name not captured)
         return None, allow_null
+    name_set = set(names)
+    if "mixed" in name_set or name_set >= {"bool", "int", "float", "string", "array", "object"}:
+        return "mixed", False
+    if "void" in name_set:
+        return "void", False
+    if "never" in name_set:
+        return "never", False
     return "|".join(names), allow_null
 
 
@@ -321,9 +328,15 @@ def _arg_info(
 ) -> list[dict[str, Any]]:
     args = []
     for index in range(num_args):
-        name = variables[index] if index < len(variables) else f"arg{index + 1}"
         ti_index = type_offset + index
         type_info = arg_type_info[ti_index] if isinstance(arg_type_info, list) and ti_index < len(arg_type_info) else {}
+        name = None
+        if index < len(variables) and variables[index]:
+            name = variables[index]
+        elif isinstance(type_info, dict) and type_info.get("arg_name"):
+            name = type_info["arg_name"]
+        else:
+            name = f"arg{index + 1}"
         type_code = _opt_int(type_info.get("type_code"), 0) if isinstance(type_info, dict) else 0
         class_name = type_info.get("class_name") if isinstance(type_info, dict) else None
         type_name, allow_null = _zend_type_name(type_code or 0)

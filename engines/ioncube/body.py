@@ -180,6 +180,7 @@ class DynamicMainRecord:
     outer_descriptor: "OuterDescriptor | None" = None
     table_name: str | None = None
     layout_words: tuple[int, int, int] | None = None
+    arg_type_info: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -849,7 +850,7 @@ def resolve_interned_type_names(
         if not isinstance(info, dict):
             continue
         ref = info.get("class_ref")
-        if ref is None or info.get("class_name"):
+        if ref is None or not isinstance(ref, int) or info.get("class_name"):
             continue
         try:
             name = resolver.decode_ref(ref)
@@ -1316,17 +1317,19 @@ def skip_serialized_type(reader: ByteReader, *, interned_names: bool) -> None:
                     read_serialized_string(reader)
 
 
-def _read_interned_string_ref(reader: ByteReader) -> int | None:
-    """Read sub_1009A240's record and return the signed table offset.
+def _read_interned_string_ref(
+    reader: ByteReader,
+) -> int | tuple[int, int] | None:
+    """Read sub_1009A240's record and return the signed table offset or (offset, length).
 
     A negative sentinel ``>= -2`` carries no resolvable name; a value ``< -2``
-    is a loader static-string offset; a non-negative value is a dictionary
-    index pair (two u32s) that cannot be resolved from the image alone.
+    is a loader static-string offset; a non-negative value is a reference into
+    opcode_data (raw_offset, length).
     """
     first = reader.i32()
     if first >= 0:
-        reader.u32()
-        return None
+        length = reader.u32()
+        return (first, length)
     return first
 
 
@@ -1336,16 +1339,17 @@ def read_serialized_type_info(
     """Read enough of sub_1009A350's type stream for icdump arg_info."""
 
     type_mask = reader.u32()
-    class_ref: int | None = None
+    class_ref: int | tuple[int, int] | None = None
+    class_name: str | None = None
     if type_mask & 0x01000000:
         if interned_names:
             class_ref = _read_interned_string_ref(reader)
         else:
-            read_serialized_string(reader)
+            class_name = read_serialized_string(reader)
         return {
             "type_code": type_mask,
             "type_name": f"type({type_mask})" if type_mask else None,
-            "class_name": None,
+            "class_name": class_name,
             "class_ref": class_ref,
         }
 
@@ -1359,12 +1363,14 @@ def read_serialized_type_info(
                     if class_ref is None:
                         class_ref = ref
                 else:
-                    read_serialized_string(reader)
+                    cname = read_serialized_string(reader)
+                    if class_name is None:
+                        class_name = cname
 
     return {
         "type_code": type_mask,
         "type_name": f"type({type_mask})" if type_mask else None,
-        "class_name": None,
+        "class_name": class_name,
         "class_ref": class_ref,
     }
 
@@ -1374,13 +1380,20 @@ def read_arg_info(
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for _ in range(count):
+        arg_name = None
+        arg_name_ref = None
         if interned_names:
-            skip_interned_string(reader)
-            skip_interned_string(reader)
+            arg_name_ref = _read_interned_string_ref(reader)
+            _read_interned_string_ref(reader)
         else:
+            arg_name = read_serialized_string(reader)
             read_serialized_string(reader)
-            read_serialized_string(reader)
-        items.append(read_serialized_type_info(reader, interned_names=interned_names))
+        item = read_serialized_type_info(reader, interned_names=interned_names)
+        if arg_name:
+            item["arg_name"] = arg_name
+        if arg_name_ref is not None:
+            item["arg_name_ref"] = arg_name_ref
+        items.append(item)
     return items
 
 
@@ -1901,7 +1914,7 @@ def extract_dynamic_main_record(
         arg_count += 1
     if fn_flags & 0x4000:
         arg_count += 1
-    skip_arg_info(reader, arg_count, interned_names=False)
+    arg_type_info = read_arg_info(reader, arg_count, interned_names=False)
     skip_static_variables(reader)
 
     line_start = None
@@ -1941,6 +1954,7 @@ def extract_dynamic_main_record(
         outer_descriptor=outer_descriptor,
         table_name=table_name,
         layout_words=raw_layout,
+        arg_type_info=arg_type_info,
     )
 
 
@@ -1994,12 +2008,12 @@ def read_inner_op_array_record(
     # ionCube stores an internal flag bit here.  Zend's materialized op_array
     # keeps 0x04000000 (returns-reference in the dumper IR) but not 0x02000000.
     fn_flags = words[1] & ~0x02000000
-    last_try_catch = words[19]
-    last_live_range = words[20]
+    last_try_catch = words[20]
+    last_live_range = words[19]
     literal_count = words[27]
     nested_function_count = words[28]
 
-    reader.read(16 * last_live_range)
+    try_catch_records = reader.read(16 * last_try_catch)
     arg_count = num_args
     if fn_flags & 0x2000:
         arg_count += 1
@@ -2010,10 +2024,39 @@ def read_inner_op_array_record(
 
     block = SerializedOpcodeBlock.read(reader)
     variable_records = reader.read(16 * last_var)
-    try_catch_records = reader.read(16 * last_try_catch)
+    live_range_records = reader.read(16 * last_live_range)
     reader.u32()
     opcode_data_size = sub_10009fc0_stream_size(reader.u32())
     opcode_data = reader.read(opcode_data_size)
+
+    for item in arg_type_info:
+        c_ref = item.get("class_ref")
+        if isinstance(c_ref, tuple) and len(c_ref) == 2:
+            off, ln = c_ref
+            val, _, _, unres = _decode_literal_string(opcode_data, off, ln)
+            if val and unres is None:
+                item["class_name"] = val
+                item["class_ref"] = None
+        a_ref = item.get("arg_name_ref")
+        if isinstance(a_ref, tuple) and len(a_ref) == 2:
+            off, ln = a_ref
+            val, _, _, unres = _decode_literal_string(opcode_data, off, ln)
+            if val and unres is None:
+                item["arg_name"] = val
+                item["arg_name_ref"] = None
+
+    if outer and outer.arg_type_info:
+        for idx, outer_item in enumerate(outer.arg_type_info):
+            if idx < len(arg_type_info):
+                if outer_item.get("class_name") and not arg_type_info[idx].get("class_name"):
+                    arg_type_info[idx]["class_name"] = outer_item["class_name"]
+                if outer_item.get("arg_name") and not arg_type_info[idx].get("arg_name"):
+                    arg_type_info[idx]["arg_name"] = outer_item["arg_name"]
+            else:
+                arg_type_info.append(dict(outer_item))
+    elif outer and not arg_type_info and outer.arg_type_info:
+        arg_type_info = [dict(x) for x in outer.arg_type_info]
+
     decoded_variables = read_variable_names(variable_records, opcode_data)
     literals, literal_pool = read_serialized_literals(
         reader,
