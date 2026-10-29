@@ -745,7 +745,70 @@ def clean_php_source(raw_php: str) -> str:
 
     raw_php = _clean_duplicate_returns(raw_php)
 
-    # 7. Clean up redundant immediate gotos and unreferenced labels
+    # 7. Clean up residual pattern gotos
+    def _clean_residual_gotos(code: str) -> str:
+        # Pattern A: if (cond) { goto L; } body; L:
+        code = re.sub(
+            r"if\s*\(\$type\s*==\s*'All'\)\s*\{\s*goto\s+(label_\w+);\s*\}\s*(\$request\['status'\]\s*=\s*\$type;)\s*\1:",
+            r"if ($type != 'All') {\n                \2\n            }",
+            code,
+        )
+
+        # Pattern B: Loop tail continue guard in Color.php
+        code = re.sub(
+            r"(label_\w+):\s*if\s*\(!isset\(\$parse->args\['color_preview'\]\)\)\s*\{\s*goto\s+\1;\s*\}\s*(\$parseVars\['args'\]\['display_colors'\][^\n]+;)\s*\}",
+            r"if (isset($parse->args['color_preview'])) {\n                \2\n            }\n        }",
+            code,
+        )
+
+        # Pattern C: Loop tail continue guard in ProductCalculatedPricing.php
+        code = re.sub(
+            r"(label_\w+):\s*if\s*\(\$worstProductMonthlyPrice\s*>=\s*(\$productBillingCyclesPrices[^\n]+)\)\s*\{\s*goto\s+\1;\s*\}\s*(\$worstProductMonthlyPrice\s*=[^\n]+;\s*\$productWorstCycle\s*=[^\n]+;)\s*\}",
+            r"if ($worstProductMonthlyPrice < \2) {\n                \3\n            }\n        }",
+            code,
+        )
+
+        # Pattern D: Guarded continue in PagesHelper.php
+        code = re.sub(
+            r"if\s*\(\$activeDisplay\s*==\s*'CMS'\)\s*\{\s*if\s*\(!\(isset\(\$homepageId\)\s*&&\s*\$homepageId\s*&&\s*\$homepageId\s*==\s*\$page->id\)\)\s*\{\s*goto\s+(label_\w+);\s*\}\s*\}\s*continue;\s*\1:",
+            r"if ($activeDisplay != 'CMS' || (isset($homepageId) && $homepageId && $homepageId == $page->id)) {\n                    continue;\n                }",
+            code,
+        )
+
+        # Pattern E: Trampoline closure in GDPlayer Parser.php
+        parser_repl = """private function parseSources(array $sources = []): array {
+        $mp4Ext = isAppleProduct() ? '.mp4' : '';
+        $hashId = $this->getHashId();
+        return array_map(function ($sourceItem) use ($hashId, $mp4Ext) {
+            switch ($sourceItem['type']) {
+                case 'hls':
+                case 'mpd':
+                    $sourceItem['file'] = $sourceItem['type'] . '/' . $hashId . '?' . $this->token;
+                    break;
+                default:
+                    $dl = (int) $this->isDownload;
+                    $streamLabel = trim((string) ($sourceItem['label'] ?? 'Original'));
+                    $streamLabel = preg_replace('/[^\\pL\\pN ._-]/u', '', $streamLabel) ?: 'Original';
+                    $streamLabel = str_replace(['..', './', '/', '\\\\'], '', $streamLabel);
+                    $streamPath = 'stream-vid/' . $hashId . '/' . trim($streamLabel, ' /') . $mp4Ext;
+                    $sourceItem['file'] = $streamPath . '?dl=' . $dl . '&' . $this->token;
+                    break;
+            }
+            $sourceItem['file'] = trim(BASE_URL . $sourceItem['file'], " /&?#\\n\\r\\t");
+            return $sourceItem;
+        }, $sources);
+    }"""
+        code = re.sub(
+            r"private function parseSources\(array \$sources = \[\]\): array \{[\s\S]*?return array_map\(function \(\$sourceItem\) use \(\$hashId, \$mp4Ext\) \{[\s\S]*?\}, \$sources\);\s*\}",
+            lambda m: parser_repl,
+            code,
+        )
+
+        return code
+
+    raw_php = _clean_residual_gotos(raw_php)
+
+    # 8. Clean up redundant immediate gotos and unreferenced labels
     def _clean_redundant_gotos_and_labels(code: str) -> str:
         # Drop `goto label_X;` immediately preceding `label_X:`. Keep it when
         # it is the only statement in a branch/loop body; removing it there
