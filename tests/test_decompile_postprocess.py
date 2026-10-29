@@ -7,6 +7,7 @@ import pytest
 from decompile import (
     _invert_condition,
     _invert_empty_if_guards,
+    _normalize_psr4_namespaces,
     clean_php_source,
     validate_php_structure,
 )
@@ -83,6 +84,30 @@ class SpondonIt\Service\SpondonItServiceProvider extends Illuminate\Support\Serv
     assert r"class SpondonItServiceProvider extends ServiceProvider" in result
     assert "class Provider" not in result
     assert r"Spondon\It\Service\Provider" not in result
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("new AppXMLParser();", r"new App\XML\Parser();"),
+        ("new AppURL();", r"new App\URL();"),
+        ("new AppDB();", r"new App\DB();"),
+        ("new AppHttpClient();", r"new App\Http\Client();"),
+        ("new AppUserRepository();", r"new App\User\Repository();"),
+    ],
+)
+def test_acronym_class_names_split_into_whole_words(code, expected):
+    assert _normalize_psr4_namespaces(code, namespace="App") == expected
+
+
+def test_declared_acronym_class_name_is_not_split():
+    code = "class AppXMLParser {}"
+
+    result = _normalize_psr4_namespaces(
+        code, namespace="App", declared_classes={"AppXMLParser"}
+    )
+
+    assert result == code
 
 
 def test_empty_if_with_nested_parentheses_is_removed():

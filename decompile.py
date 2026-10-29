@@ -515,7 +515,8 @@ def _normalize_psr4_namespaces(
             matched = m.group(0)
             if matched in declared_classes:
                 return matched
-            parts = re.findall(r'[A-Z][a-z0-9_]*', matched)
+            # Keep acronym runs whole: AppXMLParser -> App, XML, Parser.
+            parts = re.split(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])', matched)
             if len(parts) >= 2:
                 return '\\'.join(parts)
             return matched
