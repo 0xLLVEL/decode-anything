@@ -84,47 +84,90 @@ VENDOR_PSR4_MAP = {
 }
 
 
-def _invert_condition(cond: str) -> str:
-    """Invert a boolean expression cleanly according to logic rules."""
-    cond = cond.strip()
-    if cond.startswith("!") and not cond.startswith("!="):
-        inner = cond[1:].strip()
-        if inner.startswith("(") and inner.endswith(")"):
-            depth = 0
-            is_wrapped = True
-            for c in inner[:-1]:
-                if c == '(': depth += 1
-                elif c == ')': depth -= 1
-                if depth == 0:
-                    is_wrapped = False
+_COMPARISON_INVERSIONS = {
+    "===": "!==",
+    "!==": "===",
+    "==": "!=",
+    "!=": "==",
+    ">=": "<",
+    "<=": ">",
+    ">": "<=",
+    "<": ">=",
+}
+_SIMPLE_ATOM_RE = re.compile(
+    r"^(?:\$[A-Za-z_]\w*(?:\[[^\]]*\])?(?:->[A-Za-z_]\w*)?|[A-Za-z_]\w*\([^()]*\))$"
+)
+
+
+def _strip_outer_parens(expr: str) -> str:
+    """Remove only parentheses that wrap the whole expression."""
+    expr = expr.strip()
+    while expr.startswith("(") and expr.endswith(")"):
+        masked = _mask_php_literals(expr)
+        depth = 0
+        wraps = True
+        for index, char in enumerate(masked):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(masked) - 1:
+                    wraps = False
                     break
-            if is_wrapped:
-                return inner[1:-1].strip()
-        return inner
+        if not wraps:
+            break
+        expr = expr[1:-1].strip()
+    return expr
 
-    comparisons = [
-        (" === ", " !== "),
-        (" !== ", " === "),
-        (" == ", " != "),
-        (" != ", " == "),
-        (" >= ", " < "),
-        (" <= ", " > "),
-        (" > ", " <= "),
-        (" < ", " >= "),
-    ]
-    for op, inv_op in comparisons:
-        if op in cond:
-            parts = cond.split(op, 1)
-            return f"{parts[0].strip()}{inv_op}{parts[1].strip()}"
 
-    m_range = re.match(r'(\d+)\s*<=\s*(\$[A-Za-z0-9_]+)\s*&&\s*\2\s*<\s*(\d+)', cond)
-    if m_range:
-        low, var, high = m_range.group(1), m_range.group(2), m_range.group(3)
-        return f"{var} < {low} || {var} >= {high}"
+def _split_top_level(expr: str, operator: str) -> tuple[str, str] | None:
+    """Split on an operator that is not nested in parens, strings or comments."""
+    masked = _mask_php_literals(expr)
+    depth = 0
+    for index, char in enumerate(masked):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif depth == 0 and masked.startswith(operator, index):
+            return expr[:index], expr[index + len(operator):]
+    return None
 
-    if " " in cond or "||" in cond or "&&" in cond:
+
+def _invert_condition(cond: str) -> str:
+    """Negate a boolean expression without changing its meaning."""
+    cond = _strip_outer_parens(cond.strip())
+    if not cond:
+        return "true"
+
+    split = _split_top_level(cond, "||")
+    if split:
+        parts = [_invert_condition(split[0]), _invert_condition(split[1])]
+        joined = [f"({part})" if _split_top_level(part, "||") else part for part in parts]
+        return " && ".join(joined)
+
+    split = _split_top_level(cond, "&&")
+    if split:
+        return f"{_invert_condition(split[0])} || {_invert_condition(split[1])}"
+
+    if _split_top_level(cond, "<=>"):
         return f"!({cond})"
-    return f"!{cond}"
+
+    for operator in ("===", "!==", "==", "!=", ">=", "<=", ">", "<"):
+        split = _split_top_level(cond, operator)
+        if split is None:
+            continue
+        left, right = split
+        if operator == ">" and left.rstrip().endswith(("-", "=")):
+            continue
+        return f"{left.strip()} {_COMPARISON_INVERSIONS[operator]} {right.strip()}"
+
+    if cond.startswith("!") and not cond.startswith("!="):
+        return _strip_outer_parens(cond[1:].strip())
+
+    if _SIMPLE_ATOM_RE.match(cond):
+        return f"!{cond}"
+    return f"!({cond})"
 
 
 def _simplify_boolean_expressions(code: str) -> str:

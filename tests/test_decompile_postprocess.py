@@ -2,7 +2,14 @@
 
 from pathlib import Path
 
-from decompile import clean_php_source, validate_php_structure
+import pytest
+
+from decompile import (
+    _invert_condition,
+    _invert_empty_if_guards,
+    clean_php_source,
+    validate_php_structure,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "postprocess"
 
@@ -144,6 +151,46 @@ def test_empty_method_bodies_are_not_control_flow():
     code = "<?php\nclass A {\n    public function noop(): void {}\n}\n"
 
     assert validate_php_structure(code) == (True, "")
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("$x", "!$x"),
+        ("!$x", "$x"),
+        ("!($a && $b)", "$a && $b"),
+        ("!$a && $b", "$a || !$b"),
+        ("$a >= 1 && $b < 2", "$a < 1 || $b >= 2"),
+        ("$a || $b", "!$a && !$b"),
+        ("$a && $b || $c", "(!$a || !$b) && !$c"),
+        ("$x === null", "$x !== null"),
+        ("!empty($x)", "empty($x)"),
+        ("!foo($a, $b)", "foo($a, $b)"),
+        ("$a instanceof Foo", "!($a instanceof Foo)"),
+        ('$x === "a&&b"', '$x !== "a&&b"'),
+        ("$a <=> $b", "!($a <=> $b)"),
+    ],
+)
+def test_invert_condition_negates_without_changing_meaning(condition, expected):
+    assert _invert_condition(condition) == expected
+
+
+def test_empty_guard_with_compound_condition_inverts_every_term():
+    code = (
+        "<?php\n"
+        "function f($a, $b) {\n"
+        "    while (true) {\n"
+        "        if (!$a && $b) {\n"
+        "        }\n"
+        "        continue;\n"
+        "    }\n"
+        "}\n"
+    )
+
+    result = _invert_empty_if_guards(code)
+
+    assert "if ($a || !$b) {" in result
+    assert "continue;" in result
 
 
 def test_loop_exit_guards_become_structured_breaks():
