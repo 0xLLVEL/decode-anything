@@ -582,22 +582,41 @@ def split_statements_per(code: str) -> str:
             i += 1
             continue
 
-        # If we see semicolon or brace at paren depth 0, check what follows
-        if paren_depth == 0 and c in (";", "{", "}"):
-            out.append(c)
+        # Semicolon at paren depth 0: end of statement, split if followed by non-newline
+        if paren_depth == 0 and c == ";":
+            out.append(";")
+            j = i + 1
+            while j < n and code[j] in " \t":
+                j += 1
+            if j < n and code[j] not in "\r\n":
+                out.append("\n")
+                i = j - 1
+            i += 1
+            continue
+
+        # Opening brace at paren depth 0: start of block, split if not an empty block `{}`
+        if paren_depth == 0 and c == "{":
+            out.append("{")
+            j = i + 1
+            while j < n and code[j] in " \t":
+                j += 1
+            if j < n and code[j] not in "\r\n":
+                if code[j] != "}":
+                    out.append("\n")
+                    i = j - 1
+            i += 1
+            continue
+
+        # Closing brace at paren depth 0: end of block, split unless followed by continuation keywords
+        if paren_depth == 0 and c == "}":
+            out.append("}")
             j = i + 1
             while j < n and code[j] in " \t":
                 j += 1
             if j < n and code[j] not in "\r\n":
                 rest = code[j:]
-                keywords = (
-                    "declare", "namespace", "use ", "class ", "final ", "abstract ",
-                    "interface ", "trait ", "enum ", "public ", "protected ", "private ",
-                    "static ", "function ", "if ", "while ", "for ", "foreach ", "switch ",
-                    "try ", "return ", "throw ", "$", "parent::", "self::", "echo ",
-                    "include", "require"
-                )
-                if any(rest.startswith(kw) for kw in keywords):
+                allowed_cont = ("else", "elseif", "catch", "finally", "while", ")", ";", ",", "]", "->")
+                if not any(rest.startswith(ac) for ac in allowed_cont):
                     out.append("\n")
                     i = j - 1
             i += 1

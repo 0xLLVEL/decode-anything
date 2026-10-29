@@ -32,7 +32,7 @@ from php_reconstructor.decompiler.optimize import optimize
 from php_reconstructor.emitter.php_emitter import emit_php
 from php_reconstructor import ast as php
 from detector import scan_project, print_scan_report
-from engines.yakpro import is_yakpro_obfuscated, deobfuscate_yakpro
+from engines.yakpro import is_yakpro_obfuscated, deobfuscate_yakpro, format_per_coding_style
 
 
 LARAVEL_FACADES = {
@@ -842,12 +842,9 @@ def clean_php_source(raw_php: str) -> str:
     # 5. Extract and apply imports (use statements)
     raw_php = _extract_and_apply_imports(raw_php, namespace=namespace, declared_classes=declared_classes)
 
-    # 6. Reindent PHP source to strict 4-space indentation
-    raw_php = _reindent_php(raw_php)
-
-    # Normalize multiple blank lines
-    raw_php = re.sub(r'\n{3,}', '\n\n', raw_php)
-    return raw_php.strip() + "\n"
+    # 6. Apply strict PHP-FIG PER Coding Style formatting
+    raw_php = format_per_coding_style(raw_php)
+    return raw_php
 
 
 def _reindent_php(code: str) -> str:
