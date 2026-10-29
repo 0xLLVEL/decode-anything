@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Regenerate the encoded SourceGuardian corpus fixture.
+"""Regenerate the encoded SourceGuardian corpus fixtures.
 
-The fixture is a real ``sg_load`` container: Blowfish-CBC over LZO1X, sealed
+Each fixture is a real ``sg_load`` container: Blowfish-CBC over LZO1X, sealed
 with the first key in ``engines/sourceguardian/keys.py`` so the normal decode
-path can open it. The payload is a minimal PHP 8.1 op_array that echoes a
-string, built with the same primitives the SG unit tests use.
+path can open it. The payloads are minimal PHP 8.1 op_arrays built with the
+same primitives the SG unit tests use.
 
 Usage:
-    python tools/build_corpus_fixtures.py
+    python tools/build_corpus_fixtures.py --name hello
+    python tools/build_corpus_fixtures.py --name class -o /tmp/class.php
 """
 
 from __future__ import annotations
@@ -24,10 +25,14 @@ sys.path.insert(0, str(ROOT))
 from engines.sourceguardian.container import Blowfish, rol1
 from engines.sourceguardian.keys import SG_KEYS
 
-DEFAULT_OUTPUT = ROOT / "tests" / "corpus" / "sourceguardian" / "hello.php"
+CORPUS = ROOT / "tests" / "corpus" / "sourceguardian"
 SG_VERSION = 0x21
-PHP_81_ECHO = 136
 PHP_81_RETURN = 62
+PHP_81_RECV_INIT = 64
+PHP_81_ECHO = 136
+ZEND_ACC_PUBLIC = 0x01
+ZEND_ACC_STATIC = 0x10
+ZEND_ACC_FINAL = 0x20
 
 
 def u32(value: int) -> bytes:
@@ -53,10 +58,11 @@ def opcode(
     number: int,
     *,
     op1_nibble: int = 0xF,
+    op2_nibble: int = 0xF,
     payload: bytes = b"",
     lineno: int = 1,
 ) -> bytes:
-    type_word = (0xF << 12) | (0xF << 8) | (0xF << 4) | op1_nibble
+    type_word = (0xF << 12) | (0xF << 8) | (op2_nibble << 4) | op1_nibble
     return bytes([number]) + u32(type_word) + payload + u32(lineno)
 
 
@@ -65,17 +71,24 @@ def op_array(
     function_name: str = "",
     literals: list[bytes] | None = None,
     opcodes: list[bytes] | None = None,
+    num_args: int = 0,
+    required_num_args: int = 0,
+    arg_names: list[str] | None = None,
 ) -> bytes:
     literals = literals or []
     opcodes = opcodes or []
+    arg_names = arg_names or []
 
     buf = bytearray()
     buf.append(0xFF)                 # version gate terminator
     buf.append(2)                    # full op_array
     buf.extend(u32(0))               # fn_flags
     buf.extend(b"\x00\x00\x00")
-    buf.extend(u32(0))               # num_args
-    buf.extend(u32(0))               # required_num_args
+    buf.extend(u32(num_args))
+    buf.extend(u32(required_num_args))
+    for arg_name in arg_names:
+        buf.extend(zstr(arg_name))
+        buf.extend(u32(0))           # arg type info
     buf.extend(zstr(function_name or None))
     buf.extend(zstr(None))           # scope name
     buf.extend(u32(len(literals)))
@@ -100,32 +113,145 @@ def op_array(
     return bytes(buf)
 
 
-def bytecode_body() -> bytes:
-    body = bytearray()
-    body.extend(b"SOURCEGUARDIAN\x00")
-    body.extend(u32(SG_VERSION))
-    body.extend(u32(0))              # flags
-    body.extend(u32(0))
-    body.extend(u32(0))
-    body.append(0)                   # no functions
-    body.append(0)                   # no classes
-    body.extend(
-        op_array(
-            literals=[zval_string("hello from sourceguardian"), zval_int(1)],
-            opcodes=[
-                opcode(PHP_81_ECHO, op1_nibble=3, payload=b"\x00" + u32(0)),
-                opcode(PHP_81_RETURN, op1_nibble=3, payload=b"\x00" + u32(1)),
-            ],
-        )
+def property_record(name: str, flags: int, default: bytes) -> bytes:
+    return (
+        zstr(name)
+        + u32(flags)
+        + zstr(None)                 # mangled/typed name
+        + zstr(None)                 # doc comment
+        + default
+        + u32(0)                     # type info
+        + u32(0)                     # attributes
     )
-    return bytes(body)
+
+
+def class_record(
+    name: str,
+    *,
+    flags: int = 0,
+    properties: list[bytes] | None = None,
+    static_properties: int = 0,
+    methods: list[tuple[str, bytes]] | None = None,
+) -> bytes:
+    properties = properties or []
+    methods = methods or []
+
+    buf = bytearray()
+    buf.append(0xFF)                 # version gate
+    buf.append(2)                    # class type
+    buf.extend(zstr(name))
+    buf.extend(u32(flags))
+    buf.extend(zstr(None))           # parent
+    buf.extend(u32(0))               # interfaces
+    buf.extend(u32(0))               # traits
+    buf.extend(u32(0))               # trait aliases
+    buf.extend(u32(0))               # trait precedences
+    buf.extend(zstr(None))           # doc comment
+    buf.extend(u32(0))               # constants
+    buf.extend(u32(len(properties)))
+    buf.extend(u32(static_properties))
+    for prop in properties:
+        buf.extend(prop)
+    buf.extend(u32(0))               # class attributes
+    buf.extend(u32(0))               # trailing flags/line
+    buf.extend(u32(0))               # static properties table
+    buf.extend(u32(len(methods)))
+    for method_name, method_bytes in methods:
+        buf.extend(zstr(method_name))
+        buf.extend(method_bytes)
+    return bytes(buf)
+
+
+def body(
+    *,
+    classes: list[bytes] | None = None,
+    function: bytes | None = None,
+    main: bytes | None = None,
+) -> bytes:
+    classes = classes or []
+    buf = bytearray()
+    buf.extend(b"SOURCEGUARDIAN\x00")
+    buf.extend(u32(SG_VERSION))
+    buf.extend(u32(0))               # flags
+    buf.extend(u32(0))
+    buf.extend(u32(0))
+    if function is not None:
+        buf.append(2)                # function tag
+        buf.extend(u32(0))           # composite key
+        buf.extend(function)
+    buf.append(0)                    # end of functions
+    for cls in classes:
+        buf.append(1)                # class tag
+        buf.extend(u32(0))           # composite key
+        buf.extend(cls)
+    buf.append(0)                    # end of classes
+    buf.extend(main or return_one())
+    return bytes(buf)
+
+
+def return_one() -> bytes:
+    return op_array(
+        literals=[zval_int(1)],
+        opcodes=[opcode(PHP_81_RETURN, op1_nibble=3, payload=b"\x00" + u32(0))],
+    )
+
+
+def hello_body() -> bytes:
+    main = op_array(
+        literals=[zval_string("hello from sourceguardian"), zval_int(1)],
+        opcodes=[
+            opcode(PHP_81_ECHO, op1_nibble=3, payload=b"\x00" + u32(0)),
+            opcode(PHP_81_RETURN, op1_nibble=3, payload=b"\x00" + u32(1)),
+        ],
+    )
+    return body(main=main)
+
+
+def class_body() -> bytes:
+    greet = op_array(
+        function_name="greet",
+        literals=[zval_string("hello"), zval_int(1)],
+        opcodes=[
+            opcode(
+                PHP_81_RECV_INIT,
+                op1_nibble=2,
+                op2_nibble=3,
+                payload=b"\x00" + u32(1) + b"\x00" + u32(0),
+            ),
+            opcode(PHP_81_RETURN, op1_nibble=3, payload=b"\x00" + u32(1)),
+        ],
+        num_args=1,
+        required_num_args=0,
+        arg_names=["greeting"],
+    )
+    greeter = class_record(
+        "Greeter",
+        flags=ZEND_ACC_FINAL,
+        properties=[
+            property_record("count", ZEND_ACC_PUBLIC | ZEND_ACC_STATIC, zval_int(1)),
+            property_record("name", ZEND_ACC_PUBLIC, zval_string("world")),
+        ],
+        static_properties=1,
+        methods=[("greet", greet)],
+    )
+    return body(classes=[greeter], main=return_one())
+
+
+CASES = {
+    "hello": hello_body,
+    "class": class_body,
+}
 
 
 def literal_stream(payload: bytes) -> bytes:
-    """LZO1X literal-only stream for payloads of at most 238 bytes."""
-    if not 4 <= len(payload) <= 238:
-        raise ValueError(f"payload must be 4..238 bytes, got {len(payload)}")
-    return bytes([17 + len(payload)]) + payload + b"\x11\x00\x00"
+    """LZO1X literal-only stream, including the long-literal form."""
+    size = len(payload)
+    if size <= 238:
+        return bytes([17 + size]) + payload + b"\x11\x00\x00"
+    remaining = size - 18
+    zeros = remaining // 255
+    tail = remaining % 255
+    return b"\x00" + (b"\x00" * zeros) + bytes([tail]) + payload + b"\x11\x00\x00"
 
 
 def seal(key: bytes, stream: bytes, declen: int) -> bytes:
@@ -147,9 +273,9 @@ def cbc_encrypt(cipher: Blowfish, data: bytes) -> bytes:
     return bytes(out)
 
 
-def container(key: bytes, metadata: bytes, body: bytes) -> bytes:
+def container(key: bytes, metadata: bytes, raw_body: bytes) -> bytes:
     encrypted_metadata = seal(key, literal_stream(metadata), len(metadata))
-    encrypted_body = seal(key, literal_stream(body), len(body))
+    encrypted_body = seal(key, literal_stream(raw_body), len(raw_body))
     preheader = (
         b"\x00" + u32(0) + u32(SG_VERSION)
         + b"\x04" + u32(len(encrypted_metadata))
@@ -161,21 +287,23 @@ def container(key: bytes, metadata: bytes, body: bytes) -> bytes:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-o", "--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--name", choices=sorted(CASES), default="hello")
+    parser.add_argument("-o", "--output", type=Path)
     args = parser.parse_args(argv)
+    output = args.output or CORPUS / f"{args.name}.php"
 
     if not SG_KEYS:
         print("keys.py exports no SG_KEYS; run tools/sg_key_extractor.py first", file=sys.stderr)
         return 1
-    payload = container(SG_KEYS[0], b'{"license":"corpus"}', bytecode_body())
+    payload = container(SG_KEYS[0], b'{"license":"corpus"}', CASES[args.name]())
     encoded = base64.b64encode(b"\x00" * 12 + payload).decode("ascii")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(f"<?php\nsg_load('{encoded}');\n", encoding="ascii", newline="\n")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(f"<?php\nsg_load('{encoded}');\n", encoding="ascii", newline="\n")
     try:
-        shown = args.output.relative_to(ROOT)
+        shown = output.relative_to(ROOT)
     except ValueError:
-        shown = args.output
-    print(f"wrote {shown} ({args.output.stat().st_size} bytes)")
+        shown = output
+    print(f"wrote {shown} ({output.stat().st_size} bytes)")
     return 0
 
 

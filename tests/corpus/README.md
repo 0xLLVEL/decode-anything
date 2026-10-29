@@ -8,7 +8,8 @@ golden output (`hello.expected.php`).
 | Case | Encoder | Input shape |
 | --- | --- | --- |
 | `yakpro/` | YAK Pro | Handwritten source-level obfuscation: dispatcher `goto`s, inverted guard, hex-escaped literals, YAK Pro header |
-| `sourceguardian/` | SourceGuardian | Real `sg_load` container: Blowfish-CBC over LZO1X, wrapping a minimal PHP 8.1 `op_array` |
+| `sourceguardian/hello.php` | SourceGuardian | Real `sg_load` container wrapping a PHP 8.1 `op_array` that echoes a string |
+| `sourceguardian/class.php` | SourceGuardian | Same container format, carrying a final class with static/instance properties, defaults, and a default parameter |
 
 ## Provenance
 
@@ -23,12 +24,13 @@ golden output (`hello.expected.php`).
 ## Regenerating
 
 ```bash
-python tools/build_corpus_fixtures.py
+python tools/build_corpus_fixtures.py --name hello
+python tools/build_corpus_fixtures.py --name class
 ```
 
 The builder is deterministic and accepts `-o/--output`. The regression suite
-also regenerates the container into a temp directory and compares bytes, so a
-stale fixture fails the build.
+also regenerates each container into a temp directory and compares the text,
+so a stale fixture fails the build.
 
 ## Why there is no ionCube case
 

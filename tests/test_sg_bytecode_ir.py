@@ -47,6 +47,10 @@ def make_synthetic_op_array(
     cv_names: list[str] = None,
     literals: list[bytes] = None,
     opcodes: list[bytes] = None,
+    fn_flags: int = 0,
+    num_args: int = 0,
+    required_num_args: int = 0,
+    arg_names: list[str] = None,
 ) -> bytes:
     if cv_names is None:
         cv_names = []
@@ -54,19 +58,22 @@ def make_synthetic_op_array(
         literals = []
     if opcodes is None:
         opcodes = []
+    if arg_names is None:
+        arg_names = []
 
     buf = bytearray()
     # version_gate (ver=0x21 >= 0x17): immediate 0xFF terminator
     buf.append(0xFF)
     # type_byte = 2 (full op_array)
     buf.append(2)
-    # fn_flags = 0
-    buf.extend(u32(0))
+    buf.extend(u32(fn_flags))
     # 3 padding bytes
     buf.extend(b"\x00\x00\x00")
-    # num_args = 0, required_num_args = 0
-    buf.extend(u32(0))
-    buf.extend(u32(0))
+    buf.extend(u32(num_args))
+    buf.extend(u32(required_num_args))
+    for arg_name in arg_names:
+        buf.extend(zstr(arg_name))
+        buf.extend(u32(0))  # type info
     # function_name
     buf.extend(zstr(function_name if function_name else None))
     # scope_name
@@ -263,21 +270,38 @@ def test_synthetic_container_parse_and_decompile():
     assert "return 1;" in php_code
 
 
+def make_synthetic_property(name: str, flags: int, default: bytes, doc: str = None) -> bytes:
+    return (
+        zstr(name)
+        + u32(flags)
+        + zstr(None)     # mangled/typed name
+        + zstr(doc)
+        + default
+        + u32(0)         # type info
+        + u32(0)         # attributes
+    )
+
+
 def make_synthetic_class(
     class_name: str,
     methods: list[tuple[str, bytes]] = None,
     constants: dict[str, bytes] = None,
+    properties: list[bytes] = None,
+    class_flags: int = 0,
+    static_properties: int = 0,
 ) -> bytes:
     if methods is None:
         methods = []
     if constants is None:
         constants = {}
+    if properties is None:
+        properties = []
 
     buf = bytearray()
     buf.append(0xFF)  # version_gate
     buf.append(2)     # type_byte = 2
     buf.extend(zstr(class_name))
-    buf.extend(u32(0))  # class_flags
+    buf.extend(u32(class_flags))
     buf.extend(zstr(None))  # parent_name
     buf.extend(u32(0))  # interfaces count
     buf.extend(u32(0))  # traits count
@@ -292,9 +316,10 @@ def make_synthetic_class(
         buf.extend(zstr(None))
         buf.extend(u32(0))  # _skip_attributes
         buf.extend(u32(0))
-    # _skip_class_props:
-    buf.extend(u32(0))  # total props
-    buf.extend(u32(0))  # static count
+    buf.extend(u32(len(properties)))
+    buf.extend(u32(static_properties))
+    for prop in properties:
+        buf.extend(prop)
     # _skip_class_attributes:
     buf.extend(u32(0))  # attributes count
     buf.extend(u32(0))  # trailing flags/line word
@@ -306,6 +331,23 @@ def make_synthetic_class(
         buf.extend(zstr(mname))
         buf.extend(moa)
 
+    return bytes(buf)
+
+
+def make_synthetic_container(classes: list[bytes], main: bytes) -> bytes:
+    buf = bytearray()
+    buf.extend(b"SOURCEGUARDIAN\x00")
+    buf.extend(u32(0x21))  # ver
+    buf.extend(u32(0))     # flags
+    buf.extend(u32(0))
+    buf.extend(u32(0))
+    buf.append(0)          # no functions
+    for cls in classes:
+        buf.append(1)
+        buf.extend(u32(0))  # composite key
+        buf.extend(cls)
+    buf.append(0)          # end of classes
+    buf.extend(main)
     return bytes(buf)
 
 
@@ -496,5 +538,78 @@ def test_full_sg_file_end_to_end_decompile(tmp_path):
     decompiled_code = out_file.read_text(encoding="utf-8")
     assert "function say_hello()" in decompiled_code
     assert "Hello from SourceGuardian!" in decompiled_code
+
+
+def _main_return() -> bytes:
+    return make_synthetic_op_array(
+        literals=[make_zval_int(1)],
+        opcodes=[
+            make_synthetic_opcode(
+                opcode_num=62,
+                op1_nibble=3,
+                payload=b"\x00" + u32(0),
+            )
+        ],
+    )
+
+
+def test_synthetic_class_keeps_flags_properties_and_parameter_defaults():
+    recv_init = make_synthetic_opcode(
+        opcode_num=64,  # ZEND_RECV_INIT
+        op1_nibble=2,
+        op2_nibble=3,
+        payload=b"\x00" + u32(1) + b"\x00" + u32(0),
+    )
+    op_return = make_synthetic_opcode(
+        opcode_num=62,
+        op1_nibble=3,
+        payload=b"\x00" + u32(1),
+    )
+    method_bytes = make_synthetic_op_array(
+        function_name="greet",
+        literals=[make_zval_string("hello"), make_zval_int(1)],
+        opcodes=[recv_init, op_return],
+        num_args=1,
+        required_num_args=0,
+        arg_names=["greeting"],
+    )
+    class_bytes = make_synthetic_class(
+        class_name="Greeter",
+        class_flags=0x20,  # ZEND_ACC_FINAL
+        properties=[
+            make_synthetic_property("count", 0x11, make_zval_int(1)),
+            make_synthetic_property("name", 0x01, make_zval_string("world")),
+        ],
+        static_properties=1,
+        methods=[("greet", method_bytes)],
+    )
+
+    ir = build_ir(
+        make_synthetic_container([class_bytes], _main_return()),
+        source_file="props.php",
+    )
+    cls = next(iter(ir["class_index"].values()))
+    assert cls["ce_flags_decoded"]["is_final"] is True
+    assert cls["properties_merged"]["count"]["is_static"] is True
+    assert cls["properties_merged"]["name"]["flags_decoded"]["visibility"] == "public"
+    assert cls["properties_merged"]["name"]["default_value"] == "world"
+
+    php_code = emit_php(optimize(decompile_program(parse_dump(ir))))
+    assert "final class Greeter" in php_code
+    assert "public static $count = 1;" in php_code
+    assert "public $name = 'world';" in php_code
+    assert "function greet($greeting = 'hello')" in php_code
+
+
+def test_synthetic_abstract_class_flag_is_emitted():
+    class_bytes = make_synthetic_class("Base", class_flags=0x40)  # ZEND_ACC_ABSTRACT
+
+    ir = build_ir(
+        make_synthetic_container([class_bytes], _main_return()),
+        source_file="abstract.php",
+    )
+
+    php_code = emit_php(optimize(decompile_program(parse_dump(ir))))
+    assert "abstract class Base" in php_code
 
 

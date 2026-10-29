@@ -19,22 +19,36 @@ from decompile import decompile_file
 CORPUS = Path(__file__).parent / "corpus"
 BUILDER = Path(__file__).parents[1] / "tools" / "build_corpus_fixtures.py"
 PHP_AVAILABLE = shutil.which("php") is not None
+ENCODERS = {"yakpro": "yakpro", "sourceguardian": "SourceGuardian"}
+
+
+def _cases() -> list:
+    cases = []
+    for directory in sorted(CORPUS.iterdir()):
+        encoder = ENCODERS.get(directory.name)
+        if encoder is None:
+            continue
+        for encoded in sorted(directory.glob("*.php")):
+            if encoded.name.endswith(".expected.php"):
+                continue
+            expected = encoded.with_name(encoded.stem + ".expected.php")
+            cases.append(
+                pytest.param(
+                    encoded,
+                    expected,
+                    encoder,
+                    id=f"{directory.name}-{encoded.stem}",
+                )
+            )
+    return cases
 
 
 def _normalized(path: Path) -> str:
     return path.read_text(encoding="utf-8").replace("\r\n", "\n").strip() + "\n"
 
 
-@pytest.mark.parametrize(
-    ("case", "encoder"),
-    [
-        pytest.param("yakpro", "yakpro", id="yakpro"),
-        pytest.param("sourceguardian", "SourceGuardian", id="sourceguardian"),
-    ],
-)
-def test_encoded_corpus_decodes_to_golden(tmp_path, case, encoder):
-    encoded = CORPUS / case / "hello.php"
-    expected = CORPUS / case / "hello.expected.php"
+@pytest.mark.parametrize(("encoded", "expected", "encoder"), _cases())
+def test_encoded_corpus_decodes_to_golden(tmp_path, encoded, expected, encoder):
     output = tmp_path / "hello.decoded.php"
     original = encoded.read_bytes()
 
@@ -51,16 +65,17 @@ def test_encoded_corpus_decodes_to_golden(tmp_path, case, encoder):
         assert valid is True, status.get("syntax") or status.get("structure")
 
 
-def test_sourceguardian_fixture_is_reproducible(tmp_path):
-    target = tmp_path / "hello.php"
+@pytest.mark.parametrize("name", ["hello", "class"])
+def test_sourceguardian_fixture_is_reproducible(tmp_path, name):
+    target = tmp_path / f"{name}.php"
 
     result = subprocess.run(
-        [sys.executable, str(BUILDER), "--output", str(target)],
+        [sys.executable, str(BUILDER), "--name", name, "--output", str(target)],
         capture_output=True,
         text=True,
     )
 
     assert result.returncode == 0, result.stderr
-    committed = (CORPUS / "sourceguardian" / "hello.php")
+    committed = CORPUS / "sourceguardian" / f"{name}.php"
     # Compare text so a CRLF checkout does not fail the fixture check.
     assert target.read_text(encoding="ascii") == committed.read_text(encoding="ascii")

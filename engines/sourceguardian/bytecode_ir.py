@@ -668,19 +668,62 @@ def _parse_property_zval(r: StreamReader, ver: int) -> dict:
     return value
 
 
-def _skip_class_props(r: StreamReader, ver: int) -> None:
+# Zend class/property flag bits, shared by PHP 8.1 through 8.4.
+_ZEND_ACC_PROTECTED = 0x02
+_ZEND_ACC_PRIVATE = 0x04
+_ZEND_ACC_STATIC = 0x10
+_ZEND_ACC_FINAL = 0x20
+_ZEND_ACC_ABSTRACT = 0x40
+_ZEND_ACC_INTERFACE = 0x01
+_ZEND_ACC_TRAIT = 0x02
+
+
+def _decode_class_flags(flags: int) -> dict:
+    return {
+        "is_interface": bool(flags & _ZEND_ACC_INTERFACE),
+        "is_trait": bool(flags & _ZEND_ACC_TRAIT),
+        "is_final": bool(flags & _ZEND_ACC_FINAL),
+        "is_abstract": bool(flags & _ZEND_ACC_ABSTRACT),
+    }
+
+
+def _decode_property_flags(flags: int) -> dict:
+    if flags & _ZEND_ACC_PRIVATE:
+        visibility = "private"
+    elif flags & _ZEND_ACC_PROTECTED:
+        visibility = "protected"
+    else:
+        visibility = "public"
+    return {"visibility": visibility, "is_static": bool(flags & _ZEND_ACC_STATIC)}
+
+
+def _parse_class_props(r: StreamReader, ver: int) -> dict:
     total = r.read_u32()
-    r.read_u32()                     # static count
-    for _ in range(total):
+    static_count = r.read_u32()
+    properties: dict = {}
+    for index in range(total):
         if _next_u32_is_probable_prop_slot(r):
             r.read_u32()             # property slot/offset
-        _read_prop_zstr(r)           # property name
-        r.read_u32()                 # flags
+        name = _read_prop_zstr(r)
+        flags = r.read_u32()
         _read_prop_zstr(r)           # mangled/typed-property name
-        _read_prop_zstr(r)           # doc comment
-        _parse_property_zval(r, ver)
+        doc_comment = _read_prop_zstr(r)
+        default = _parse_property_zval(r, ver)
         _skip_type_info(r, ver)
         _skip_attributes(r, ver)
+        if not name:
+            continue
+        default_type = default.get("type") if isinstance(default, dict) else None
+        has_default = default_type not in (None, "undef")
+        properties[name] = {
+            "name": name,
+            "flags_decoded": _decode_property_flags(flags),
+            "is_static": index < static_count or bool(flags & _ZEND_ACC_STATIC),
+            "has_default_value": has_default,
+            "default_value": _unwrap_zval(default) if has_default else None,
+            "doc_comment": doc_comment,
+        }
+    return properties
 
 
 def _attributes_plausible_at(r: StreamReader, pos: int, ver: int, require_nonempty: bool = False) -> bool:
@@ -792,7 +835,7 @@ def parse_class(r: StreamReader, ver: int, has_hybrid_vm: bool = False) -> dict:
         r.read_u32()
         constants[cname] = cval.get('value') if isinstance(cval, dict) else cval
 
-    _skip_class_props(r, ver)
+    properties = _parse_class_props(r, ver)
     _skip_class_attributes(r, ver)
     r.read_u32()                     # trailing flags/line word
     _parse_hashtable(r, ver)         # static properties table
@@ -807,9 +850,10 @@ def parse_class(r: StreamReader, ver: int, has_hybrid_vm: bool = False) -> dict:
 
     return {
         'class_name': class_name, 'class_flags': class_flags,
+        'ce_flags_decoded': _decode_class_flags(class_flags),
         'parent_name': parent_name, 'interfaces': interfaces,
         'traits': traits, 'doc_comment': doc_comment,
-        'constants': constants, 'methods': methods,
+        'constants': constants, 'properties': properties, 'methods': methods,
     }
 
 
@@ -907,6 +951,9 @@ def _normalize_oparray(
     fn_flags = oa.get("fn_flags", 0)
 
     arg_names = oa.get("arg_names", [])
+    required_num_args = oa.get("required_num_args")
+    if not isinstance(required_num_args, int):
+        required_num_args = len(arg_names)
     arg_info = [
         {
             "index": i,
@@ -915,7 +962,7 @@ def _normalize_oparray(
             "pass_by_reference": False,
             "allow_null": False,
             "is_variadic": False,
-            "has_default": False,
+            "has_default": i >= required_num_args,
         }
         for i, name in enumerate(arg_names)
     ]
@@ -1029,9 +1076,10 @@ def container_to_icdump(container: dict, source_file: str = "sourceguardian.php"
             "parent": cls.get("parent_name"),
             "interfaces": cls.get("interfaces", []),
             "traits": cls.get("traits", []),
-            "ce_flags_decoded": {},
+            "ce_flags_decoded": cls.get("ce_flags_decoded")
+            or _decode_class_flags(cls.get("class_flags", 0)),
             "constants_table": cls.get("constants", {}),
-            "properties_merged": {},
+            "properties_merged": cls.get("properties", {}),
             "methods": methods_map,
             "doc_comment": cls.get("doc_comment"),
         }
