@@ -454,8 +454,17 @@ class RangeDecompiler:
         if target is None or target <= i or target > end + 1 or result_key is None:
             self.ctx.emit(i, php.OpcodeComment(i, op.name, "unsupported shape"))
             return i + 1
+        # The fallback is usually computed inside the guarded region, but PHP
+        # also emits a QM_ASSIGN *at* the jump target that copies the call
+        # result into the COALESCE temp. Decompile it too, or `right` stays an
+        # unresolved temp and the next QM_ASSIGN overwrites the `??`.
+        copy_at_target = (
+            target < len(self.ops)
+            and self.ops[target].name == "ZEND_QM_ASSIGN"
+            and self.ops[target].result.temp_key == result_key
+        )
         self.ctx.push_sink()
-        self.decompile_range(i + 1, target - 1)
+        self.decompile_range(i + 1, target if copy_at_target else target - 1)
         for stmt in self.ctx.pop_sink():
             self.ctx.current_sink().append((i, stmt))
         right = self.ctx.temps.pop(result_key, php.TempVar(result_key))
@@ -463,7 +472,7 @@ class RangeDecompiler:
             self.ctx.temps[result_key] = php.BinaryOp(op="??", left=left, right=right)
         else:
             self.ctx.temps[result_key] = php.Ternary(cond=left, if_true=None, if_false=right)
-        return target
+        return target + 1 if copy_at_target else target
 
     def _jmp_null(self, i: int, end: int, op: Opcode) -> int:
         target = op.jump_targets[0] if op.jump_targets else (

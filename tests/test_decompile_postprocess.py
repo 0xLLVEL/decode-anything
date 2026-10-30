@@ -242,6 +242,37 @@ def test_null_array_key_is_not_dropped():
     assert "[null => $v]" in result
 
 
+def test_global_classes_used_in_namespaced_code_get_imported():
+    result = clean_php_source(
+        "<?php\nnamespace SpondonIt\\Service\\Middleware;\n\n"
+        "class Guard\n{\n"
+        "    public function handle($request, Closure $next)\n    {\n"
+        "        try {\n            return $next($request);\n"
+        "        } catch (Exception $e) {\n            throw $e;\n        }\n"
+        "    }\n}\n"
+    )
+
+    assert "use Closure;" in result
+    assert "use Exception;" in result
+
+
+def test_global_classes_are_not_imported_without_a_namespace():
+    result = clean_php_source("<?php\nfunction f(Closure $next) {}\n")
+
+    assert "use Closure;" not in result
+
+
+def test_locally_declared_exception_is_not_shadowed_by_a_global_import():
+    result = clean_php_source(
+        "<?php\nnamespace App\\Support;\n\n"
+        "class Exception extends \\RuntimeException {}\n\n"
+        "function f() {\n    try {\n        foo();\n    } catch (Exception $e) {\n        throw $e;\n    }\n}\n"
+    )
+
+    assert "use Exception;" not in result
+    assert "class Exception extends" in result
+
+
 def test_parent_calls_are_not_rewritten_to_self():
     result = clean_php_source(
         "<?php\nclass A {\n"

@@ -229,7 +229,12 @@ def _simplify_unconditional_cfg(op_entry: dict) -> dict:
     order = []
     seen: set[int] = set()
     cursor = 0
-    while 0 <= cursor < n and cursor not in seen:
+    while 0 <= cursor < n:
+        if cursor in seen:
+            # Revisiting an opcode means a loop latch. The straight walk cannot
+            # follow it, and stopping there would drop every opcode after the
+            # loop, including the function's return and any second loop.
+            return op_entry
         seen.add(cursor)
         order.append(cursor)
         name = ops[cursor].get("opcode_name", "")

@@ -75,6 +75,36 @@ LARAVEL_FACADES = {
     "Arr": "Illuminate\\Support\\Arr",
 }
 
+PHP_GLOBAL_CLASSES = (
+    "ArrayAccess",
+    "ArrayObject",
+    "Closure",
+    "Countable",
+    "DateTime",
+    "DateTimeImmutable",
+    "DateTimeInterface",
+    "Exception",
+    "Generator",
+    "InvalidArgumentException",
+    "Iterator",
+    "IteratorAggregate",
+    "JsonSerializable",
+    "LogicException",
+    "PDO",
+    "PDOException",
+    "RuntimeException",
+    "SplFileInfo",
+    "SplFileObject",
+    "stdClass",
+    "Stringable",
+    "Throwable",
+    "Traversable",
+    "TypeError",
+    "UnexpectedValueException",
+    "ValueError",
+    "WeakMap",
+)
+
 VENDOR_PSR4_MAP = {
     "DiDom": ["Document", "Element", "Node", "Query", "ClassList", "Style", "Encoder", "Errors"],
     "Detection": ["MobileDetect"],
@@ -590,7 +620,18 @@ def _extract_and_apply_imports(
         if used:
             imports[short] = fqcn
 
-    if not imports:
+    # Bytecode stores FQCNs, so a bare `Closure`/`Exception` type hint in a
+    # namespaced file is a global reference that lost its `use` statement.
+    global_imports: set[str] = set()
+    if namespace:
+        for short in PHP_GLOBAL_CLASSES:
+            if short in declared_classes or short in imports or short in collisions:
+                continue
+            used = re.compile(r"(?<![A-Za-z0-9_\\$>:])" + re.escape(short) + r"\b")
+            if any(used.search(parts[i]) for i in range(0, len(parts), 2)):
+                global_imports.add(short)
+
+    if not imports and not global_imports:
         return php_code
 
     sorted_short_names = sorted(imports.keys(), key=lambda s: len(imports[s]), reverse=True)
@@ -602,6 +643,7 @@ def _extract_and_apply_imports(
 
     body = ''.join(parts)
     use_lines = [f"use {imports[s]};" for s in sorted(imports.keys(), key=lambda s: imports[s].lower())]
+    use_lines.extend(f"use {s};" for s in sorted(global_imports))
     use_block = "\n".join(use_lines)
 
     if ns_stmt_match:

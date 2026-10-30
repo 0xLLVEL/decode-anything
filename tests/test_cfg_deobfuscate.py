@@ -123,6 +123,46 @@ def test_unconditional_cfg_is_emitted_in_execution_order():
     assert [op["index"] for op in result["opcodes"]] == [0, 1]
 
 
+def test_loop_latch_keeps_opcodes_after_the_loop():
+    ops = [
+        _op(0, "ZEND_RECV"),
+        _op(1, "ZEND_FE_RESET_R", [6, 6]),
+        _op(2, "ZEND_FE_FETCH_R", [6, 6]),
+        _op(3, "ZEND_ECHO"),
+        _op(4, "ZEND_JMP", [2]),
+        _op(5, "ZEND_FE_FREE"),
+        _op(6, "ZEND_RETURN"),
+    ]
+    entry = {"opcodes": ops}
+
+    result = deobfuscate_cfg(entry)
+
+    names = [op["opcode_name"] for op in result["opcodes"]]
+    assert names[-1] == "ZEND_RETURN"
+    assert len(names) == len(ops)
+
+
+def test_second_loop_after_a_latch_survives():
+    ops = [
+        _op(0, "ZEND_RECV"),
+        _op(1, "ZEND_FE_RESET_R", [5, 5]),
+        _op(2, "ZEND_FE_FETCH_R", [5, 5]),
+        _op(3, "ZEND_ECHO"),
+        _op(4, "ZEND_JMP", [2]),
+        _op(5, "ZEND_FE_RESET_R", [9, 9]),
+        _op(6, "ZEND_FE_FETCH_R", [9, 9]),
+        _op(7, "ZEND_ECHO"),
+        _op(8, "ZEND_JMP", [6]),
+        _op(9, "ZEND_RETURN"),
+    ]
+
+    result = deobfuscate_cfg({"opcodes": ops})
+
+    names = [op["opcode_name"] for op in result["opcodes"]]
+    assert names.count("ZEND_FE_RESET_R") == 2
+    assert names[-1] == "ZEND_RETURN"
+
+
 def test_self_target_conditional_is_dropped_but_loop_guard_is_kept():
     plain = [
         _op(0, "ZEND_RECV"),
