@@ -1581,16 +1581,25 @@ SUPPORTED_BODY_LAYOUTS = (81, 82, 83, 84)
 
 
 def _require_supported_body_layout(php_version: int) -> None:
-    """Fail with a clear message when only the header layer can handle a target."""
+    """Fail with a clear message when neither a static nor a runtime path exists."""
 
     if php_version in SUPPORTED_BODY_LAYOUTS:
         return
+    from .runtime_dump import RUNTIME_BUNDLES
+
+    if php_version in RUNTIME_BUNDLES:
+        raise ParseError(
+            f"ionCube PHP {php_version // 10}.{php_version % 10} bodies need the "
+            "runtime opcode dump: PHP 7.x op_arrays are built and XOR-encoded by "
+            "the loader in memory, so the static blob layout cannot be replayed. "
+            "Install the ic{}dump-opcodes runtime and point "
+            "IONCUBE_OPCODEDUMP_HOME at it (or keep it under "
+            "loader/opcodedump/).".format(php_version)
+        )
     supported = ", ".join(f"{v // 10}.{v % 10}" for v in SUPPORTED_BODY_LAYOUTS)
     raise ParseError(
         f"ionCube PHP {php_version // 10}.{php_version % 10} bodies are not "
-        "supported yet: the header, payload and loader string tables decode, "
-        "but the PHP 7.x serialized op_array layout has to be ported before "
-        f"the opcode streams can be read. Supported body layouts: {supported}."
+        f"supported. Supported body layouts: {supported}."
     )
 
 
@@ -1622,6 +1631,14 @@ def dump_file_to_ir(
     target_php_version = php_version or header_php_version
     if php_version and php_version != header_php_version:
         print(f"warning: target php {php_version} conflicts with header target {header_php_version}")
+
+    from .runtime_dump import RUNTIME_BUNDLES, runtime_icdump
+
+    if target_php_version in RUNTIME_BUNDLES:
+        icdump = runtime_icdump(source, target_php_version)
+        if icdump is not None:
+            print(f"    runtime opcode dump: PHP {target_php_version // 10}.{target_php_version % 10}")
+            return icdump, "", header_report
     _require_supported_body_layout(target_php_version)
 
     opcode_names    = load_opcode_names()

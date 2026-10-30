@@ -66,3 +66,16 @@ def test_file_scope_guard_uses_bare_return():
 
     assert "return;" in code
     assert "return null" not in code
+
+
+def test_top_level_declarations_survive_an_unconditional_exit():
+    # ionCube main op_arrays end in exit(); PHP still hoists the declarations that
+    # follow it, so the decompiler must not prune them as unreachable.
+    exit_stmt = php.ExprStmt(expr=php.ExitExpr(operand=php.Literal(value="stop")))
+    function = php.FunctionDecl(name="kept", params=[], body=[_null_return()])
+    klass = php.ClassDecl(name="KeptClass")
+    emitted = _emit(exit_stmt, function, klass)
+
+    assert "exit('stop');" in emitted
+    assert "function kept()" in emitted
+    assert "class KeptClass" in emitted

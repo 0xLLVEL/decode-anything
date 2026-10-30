@@ -66,8 +66,8 @@ def test_php7_string_resolver_uses_pointer_table(php_version):
 
 
 @pytest.mark.parametrize("php_version", SEVEN_X_VERSIONS)
-def test_php7_body_layout_is_reported_as_unsupported(php_version):
-    with pytest.raises(ParseError, match="op_array layout has to be ported"):
+def test_php7_body_layout_points_at_the_runtime_dump(php_version):
+    with pytest.raises(ParseError, match="runtime opcode dump"):
         _require_supported_body_layout(php_version)
 
 

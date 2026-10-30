@@ -328,6 +328,10 @@ def _drop_dead_code_after_terminal(stmts: list[php.Stmt]) -> list[php.Stmt]:
         if _stmt_terminates(stmt):
             j = i + 1
             while j < n and not isinstance(stmts[j], php.LabelStmt):
+                # Declarations are hoisted at compile time, so they still exist
+                # after an unconditional exit/return.
+                if isinstance(stmts[j], (php.FunctionDecl, php.ClassDecl)):
+                    out.append(stmts[j])
                 j += 1
             i = j
             continue
