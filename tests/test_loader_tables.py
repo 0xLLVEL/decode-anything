@@ -4,10 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from engines.ioncube.body import LoaderHandlerTables, LoaderInternedStringResolver
-from engines.ioncube.dumper import _get_dll_candidates
+from engines.ioncube.body import (
+    LoaderHandlerTables,
+    LoaderInternedStringResolver,
+    ParseError,
+)
+from engines.ioncube.dumper import (
+    _get_dll_candidates,
+    _require_supported_body_layout,
+)
 
 VERSIONS = (81, 82, 83, 84)
+SEVEN_X_VERSIONS = (72, 73, 74)
 
 
 def _bundled_loader(php_version):
@@ -42,3 +50,26 @@ def test_x64_string_resolver_uses_pointer_table(php_version):
     assert resolver.pointer_size == 8
     assert resolver.decode_ref(-8) == "_GET"
     assert resolver.decode_ref(-9) == "_POST"
+
+
+@pytest.mark.parametrize("php_version", SEVEN_X_VERSIONS)
+def test_php7_string_resolver_uses_pointer_table(php_version):
+    resolver = LoaderInternedStringResolver.from_dll(
+        _bundled_loader(php_version), php_version
+    )
+
+    assert resolver.pointer_size == 8
+    assert resolver.decode_ref(-8) == "_GET"
+    assert resolver.decode_ref(-9) == "_POST"
+    assert resolver.decode_ref(-12) == "_GLOBALS"
+    assert resolver.decode_ref(-13) == "this"
+
+
+@pytest.mark.parametrize("php_version", SEVEN_X_VERSIONS)
+def test_php7_body_layout_is_reported_as_unsupported(php_version):
+    with pytest.raises(ParseError, match="op_array layout has to be ported"):
+        _require_supported_body_layout(php_version)
+
+
+def test_php81_body_layout_is_accepted():
+    _require_supported_body_layout(81)

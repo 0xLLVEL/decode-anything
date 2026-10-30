@@ -721,6 +721,12 @@ class LoaderInternedStringResolver:
     # 64-bit loader RVAs (image base 0x180000000). The 16-byte XOR key is
     # unchanged; pointer tables use 8-byte entries instead of 4-byte entries.
     STRING_TABLES_X64_RVA: "dict[int, tuple[int, int]]" = {
+        # PHP 7.x loaders reuse the same 16-byte key and pointer-table shape.
+        # The key was located by byte search in each build; the table offset
+        # was validated against the shared interned names (_GET, _POST, ...).
+        72: (0xA93B0, 0xA93E0),
+        73: (0xA5F20, 0xA5F60),
+        74: (0x18D960, 0x18D9A0),
         81: (0x19C6C0, 0x19C6F0),
         82: (0x1AB7D0, 0x1AB810),
         83: (0x1AE8E0, 0x1AE910),

@@ -1577,6 +1577,23 @@ def _extract_nested_closures(
         offset = real_end
 
 
+SUPPORTED_BODY_LAYOUTS = (81, 82, 83, 84)
+
+
+def _require_supported_body_layout(php_version: int) -> None:
+    """Fail with a clear message when only the header layer can handle a target."""
+
+    if php_version in SUPPORTED_BODY_LAYOUTS:
+        return
+    supported = ", ".join(f"{v // 10}.{v % 10}" for v in SUPPORTED_BODY_LAYOUTS)
+    raise ParseError(
+        f"ionCube PHP {php_version // 10}.{php_version % 10} bodies are not "
+        "supported yet: the header, payload and loader string tables decode, "
+        "but the PHP 7.x serialized op_array layout has to be ported before "
+        f"the opcode streams can be read. Supported body layouts: {supported}."
+    )
+
+
 def dump_file_to_ir(
     source: Path,
     *,
@@ -1605,6 +1622,7 @@ def dump_file_to_ir(
     target_php_version = php_version or header_php_version
     if php_version and php_version != header_php_version:
         print(f"warning: target php {php_version} conflicts with header target {header_php_version}")
+    _require_supported_body_layout(target_php_version)
 
     opcode_names    = load_opcode_names()
     resolver        = _load_resolver(loader_dll, php_version=target_php_version)

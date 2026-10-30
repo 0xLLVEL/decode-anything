@@ -4,7 +4,7 @@
 Decompiles IonCube-protected PHP files directly to clean, valid PHP source code.
 
 Usage:
-    python decompile.py <file_or_dir> [-o <output>] [--php-version {81,82,83,84}]
+    python decompile.py <file_or_dir> [-o <output>] [--php-version {72,73,74,81,82,83,84}]
 """
 
 from __future__ import annotations
@@ -1405,7 +1405,7 @@ def main() -> int:
         scan_parser.add_argument("--json", action="store_true", help="Output results in JSON format")
         scan_parser.add_argument("-d", "--decompile", action="store_true", help="Auto-decompile detected ionCube files")
         scan_parser.add_argument("-o", "--output", type=Path, help="Output directory when decompiling")
-        scan_parser.add_argument("--php-version", type=int, choices=(81, 82, 83, 84))
+        scan_parser.add_argument("--php-version", type=int, choices=(72, 73, 74, 81, 82, 83, 84))
         scan_parser.add_argument("--loader-dll", type=Path)
         args = scan_parser.parse_args(sys.argv[2:])
 
@@ -1458,7 +1458,7 @@ def main() -> int:
     parser.add_argument("--in-place", action="store_true", help="Overwrite IonCube files in place with decompiled PHP")
     parser.add_argument("--no-backup", action="store_true", help="Do not create .bak files when using --in-place")
     parser.add_argument("--no-copy-other", action="store_true", help="Do not copy non-IonCube files to output directory")
-    parser.add_argument("--php-version", type=int, choices=(81, 82, 83, 84),
+    parser.add_argument("--php-version", type=int, choices=(72, 73, 74, 81, 82, 83, 84),
                         help="Target PHP ABI (inferred from header if omitted)")
     parser.add_argument("--loader-dll", type=Path, help="Optional ionCube loader DLL for string resolution")
 
