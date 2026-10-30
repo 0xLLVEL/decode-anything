@@ -363,6 +363,10 @@ def _convert_literals(raw_literals: Any) -> list[dict[str, Any]]:
         return []
     converted = []
     for index, literal in enumerate(raw_literals):
+        magic = literal.get("magic_constant") if isinstance(literal, dict) else None
+        if isinstance(magic, str):
+            converted.append({"index": index, "type": "magic", "value": magic})
+            continue
         value = literal.get("value") if isinstance(literal, dict) else None
         out = {"index": index}
         out.update(safe_value(value))
@@ -374,13 +378,14 @@ def _convert_opcodes(raw_opcodes: Any, raw_literals: Any) -> list[dict[str, Any]
     if not isinstance(raw_opcodes, list):
         return []
     literal_values = _literal_values(raw_literals)
+    magic_literals = _magic_literal_values(raw_literals)
     converted = []
     for fallback_index, op in enumerate(raw_opcodes):
         if not isinstance(op, dict):
             continue
-        op1 = _convert_operand(op.get("op1"), literal_values)
-        op2 = _convert_operand(op.get("op2"), literal_values)
-        result = _convert_operand(op.get("result"), literal_values)
+        op1 = _convert_operand(op.get("op1"), literal_values, magic_literals)
+        op2 = _convert_operand(op.get("op2"), literal_values, magic_literals)
+        result = _convert_operand(op.get("result"), literal_values, magic_literals)
         jump_targets = _jump_targets(op)
         opcode_name = op.get("opcode_name") if isinstance(op.get("opcode_name"), str) else None
         extended_value = _signed_u32(_opt_int(op.get("extended_value"), 0) or 0)
@@ -434,7 +439,21 @@ def _literal_values(raw_literals: Any) -> list[Any]:
     return values
 
 
-def _convert_operand(raw_operand: Any, literal_values: list[Any]) -> dict[str, Any]:
+def _magic_literal_values(raw_literals: Any) -> dict[int, str]:
+    if not isinstance(raw_literals, list):
+        return {}
+    magic: dict[int, str] = {}
+    for index, literal in enumerate(raw_literals):
+        if isinstance(literal, dict) and isinstance(literal.get("magic_constant"), str):
+            magic[index] = literal["magic_constant"]
+    return magic
+
+
+def _convert_operand(
+    raw_operand: Any,
+    literal_values: list[Any],
+    magic_literals: dict[int, str] | None = None,
+) -> dict[str, Any]:
     if not isinstance(raw_operand, dict):
         return _empty_operand()
 
@@ -463,7 +482,9 @@ def _convert_operand(raw_operand: Any, literal_values: list[Any]) -> dict[str, A
     base_type = operand_type & 0x0F
     if base_type == 1 and literal_index is not None:
         out["constant"] = literal_index
-        if 0 <= literal_index < len(literal_values):
+        if magic_literals and literal_index in magic_literals:
+            out["magic_constant"] = magic_literals[literal_index]
+        elif 0 <= literal_index < len(literal_values):
             out["literal"] = safe_value(literal_values[literal_index])
     elif base_type == 8:
         if variable_index is not None:

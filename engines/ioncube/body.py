@@ -243,6 +243,7 @@ class SerializedLiteral:
     string_length: int | None = None
     string_flags: int = 0
     unresolved: str | None = None
+    magic_constant: str | None = None
 
 
 @dataclass
@@ -831,6 +832,13 @@ def resolve_interned_literal_strings(
             "<i",
             struct.pack("<I", literal.string_offset_raw),
         )[0]
+        # -1 and -2 index the loader pointer table, but both entries are null:
+        # ionCube substitutes them with the file's magic constants at runtime.
+        # -2 is observed as the directory prefix in every real sample.
+        if signed_offset == -2:
+            literal.magic_constant = "__DIR__"
+            literal.unresolved = None
+            continue
         try:
             decoded = resolver.decode_ref(signed_offset, literal.string_length)
         except ParseError:

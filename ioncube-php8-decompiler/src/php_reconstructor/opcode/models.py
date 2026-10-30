@@ -69,6 +69,7 @@ class Operand:
     has_literal: bool = False
     literal: Any = None
     resolved_literal: Any = None
+    magic_constant: str | None = None
 
     @property
     def is_unused(self) -> bool:
@@ -122,6 +123,9 @@ class Operand:
             literal=unwrap_safe_value(raw.get("literal")) if has_literal else None,
             resolved_literal=unwrap_safe_value(raw.get("resolved_literal"))
             if "resolved_literal" in raw
+            else None,
+            magic_constant=raw.get("magic_constant")
+            if isinstance(raw.get("magic_constant"), str)
             else None,
         )
 

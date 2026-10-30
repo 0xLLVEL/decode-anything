@@ -92,6 +92,8 @@ class DecompileContext:
     def resolve(self, operand: Operand, op: Opcode | None = None) -> php.Expr:
         """Turn an operand into the expression that computes it (consuming)."""
         if operand.is_const:
+            if operand.magic_constant:
+                return php.ConstFetch(name=operand.magic_constant)
             return literal_to_expr(operand.const_value())
         if operand.is_cv:
             return php.Variable(self.cv_name(operand))
