@@ -217,6 +217,7 @@ def _empty_main_op_array(source_file: str | None) -> dict[str, Any]:
         "line_end": 0,
         "fn_flags": 0,
         "fn_flags_decoded": _fn_flags_decoded(0),
+        "strict_types": False,
         "num_args": 0,
         "required_num_args": 0,
         "arg_info": [],

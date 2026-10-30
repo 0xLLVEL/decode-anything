@@ -1703,6 +1703,9 @@ def dump_file_to_ir(
             php_version=php_version,
         )
         main_id, main_op = build_op_array_entry(raw, str(source), kind="main")
+        # The dynamic main record keeps Zend's compile-unit fn_flags verbatim
+        # (a non-strict script is 0x06000000), so bit 31 is ZEND_ACC_STRICT_TYPES.
+        main_op["strict_types"] = bool(main_rec.metadata.fn_flags & 0x80000000)
         op_arrays[main_id] = main_op
         all_methods_text.append(text)
         report_methods.append({

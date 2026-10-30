@@ -138,7 +138,7 @@ def test_decompile_file_reports_empty_control_flow_and_preserves_source(
         decompile, "dump_file_to_ir", lambda *args, **kwargs: (fake_dump, "", {})
     )
     monkeypatch.setattr(
-        decompile, "clean_php_source", lambda code: "<?php\nif ($x) {\n}\n"
+        decompile, "clean_php_source", lambda code, **_: "<?php\nif ($x) {\n}\n"
     )
     monkeypatch.setattr(decompile, "validate_php_syntax", lambda path: (True, ""))
 

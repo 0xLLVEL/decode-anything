@@ -9,6 +9,7 @@ from decompile import (
     _invert_empty_if_guards,
     _normalize_psr4_namespaces,
     clean_php_source,
+    ir_declares_strict_types,
     validate_php_structure,
 )
 
@@ -271,6 +272,67 @@ def test_locally_declared_exception_is_not_shadowed_by_a_global_import():
 
     assert "use Exception;" not in result
     assert "class Exception extends" in result
+
+
+def test_strict_types_declare_is_inserted_before_namespace_and_imports():
+    result = clean_php_source(
+        "<?php\nnamespace App\\Http;\n\nclass Foo\n{\n"
+        "    public function bar(Closure $next) {}\n}\n",
+        strict_types=True,
+    )
+
+    normalized = result.replace("\r\n", "\n")
+    assert "<?php\n\ndeclare(strict_types=1);\n\nnamespace App\\Http;\n" in normalized
+    assert normalized.index("declare(strict_types=1);") < normalized.index("use Closure;")
+
+
+def test_strict_types_declare_is_inserted_without_a_namespace():
+    result = clean_php_source("<?php\n$value = 1;\n", strict_types=True)
+
+    assert result.replace("\r\n", "\n").startswith(
+        "<?php\n\ndeclare(strict_types=1);\n"
+    )
+
+
+def test_strict_types_declare_precedes_imports_in_a_namespace_less_file():
+    result = clean_php_source(
+        "<?php\n\nclass Foo\n{\n    public function bar()\n    {\n"
+        "        return Illuminate\\Support\\Facades\\Log::info('x');\n"
+        "    }\n}\n",
+        strict_types=True,
+    )
+
+    normalized = result.replace("\r\n", "\n")
+    assert normalized.startswith("<?php\n\ndeclare(strict_types=1);\n")
+    assert normalized.index("declare(strict_types=1);") < normalized.index(
+        "use Illuminate\\Support\\Facades\\Log;"
+    )
+
+
+def test_strict_types_declare_is_not_added_to_non_strict_files():
+    result = clean_php_source("<?php\nnamespace App;\n\nclass Foo {}\n")
+
+    assert "declare(strict_types=1);" not in result
+
+
+def test_strict_types_flag_is_read_from_the_main_op_array():
+    assert ir_declares_strict_types(
+        {"op_arrays": {"main": {"strict_types": True}, "function:61": {}}}
+    )
+    assert not ir_declares_strict_types(
+        {"op_arrays": {"main": {"strict_types": False}}}
+    )
+    assert not ir_declares_strict_types({"op_arrays": {}})
+    assert not ir_declares_strict_types({"op_arrays": []})
+
+
+def test_existing_strict_types_declare_is_not_duplicated():
+    result = clean_php_source(
+        "<?php\ndeclare(strict_types=1);\n\nnamespace App;\n\nclass Foo {}\n",
+        strict_types=True,
+    )
+
+    assert result.count("declare(strict_types=1);") == 1
 
 
 def test_parent_calls_are_not_rewritten_to_self():

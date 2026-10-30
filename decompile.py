@@ -658,7 +658,31 @@ def _extract_and_apply_imports(
     return body
 
 
-def clean_php_source(raw_php: str) -> str:
+STRICT_TYPES_DECLARE = "declare(strict_types=1);"
+
+
+def _insert_strict_types_declare(code: str) -> str:
+    """Put `declare(strict_types=1);` right after the PHP open tag."""
+    if re.search(r"declare\s*\(\s*strict_types\s*=", code):
+        return code
+
+    open_tag = re.search(r"<\?php", code)
+    if not open_tag:
+        return f"<?php\n\n{STRICT_TYPES_DECLARE}\n\n{code}"
+
+    head = code[: open_tag.end()]
+    tail = code[open_tag.end():].lstrip("\n")
+    return f"{head}\n\n{STRICT_TYPES_DECLARE}\n\n{tail}"
+
+
+def ir_declares_strict_types(icdump: dict) -> bool:
+    """True when the encoded file's main op_array was compiled strict."""
+    op_arrays = icdump.get("op_arrays")
+    main = op_arrays.get("main") if isinstance(op_arrays, dict) else None
+    return bool(isinstance(main, dict) and main.get("strict_types"))
+
+
+def clean_php_source(raw_php: str, *, strict_types: bool = False) -> str:
     """Post-process reconstructed PHP into idiomatic, readable code."""
     lines = raw_php.splitlines()
 
@@ -884,6 +908,10 @@ def clean_php_source(raw_php: str) -> str:
 
     # 5. Extract and apply imports (use statements)
     raw_php = _extract_and_apply_imports(raw_php, namespace=namespace, declared_classes=declared_classes)
+
+    # After the imports: in a namespace-less file they sit right below `<?php`.
+    if strict_types:
+        raw_php = _insert_strict_types_declare(raw_php)
 
     # 6. Apply strict PHP-FIG PER Coding Style formatting
     raw_php = format_per_coding_style(raw_php)
@@ -1321,7 +1349,9 @@ def decompile_file(
                 final_code += "\n"
         else:
             raw_code = emit_php(php_ast)
-            final_code = clean_php_source(raw_code)
+            final_code = clean_php_source(
+                raw_code, strict_types=ir_declares_strict_types(icdump)
+            )
             if is_yakpro_obfuscated(final_code):
                 try:
                     final_code = deobfuscate_yakpro(final_code)
