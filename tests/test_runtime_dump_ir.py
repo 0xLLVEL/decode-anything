@@ -166,3 +166,76 @@ def test_runtime_roundtrip_keeps_cv_names(tmp_path):
     ]
     assert "data" in names
     assert any(oa["kind"] == "main" for oa in icdump["op_arrays"].values())
+
+
+def _branch(index, name, target, op1=None, result=None):
+    return {
+        "index": index,
+        "opcode_name": name,
+        "opcode": 42,
+        "jump_targets": [target],
+        "op1": op1 or _unused(),
+        "op2": dict(_unused(target)),
+        "result": result or _unused(),
+    }
+
+
+def test_guard_branch_that_lands_mid_expression_resumes_after_the_return():
+    from engines.ioncube.runtime_dump import _repair_jump_targets
+
+    ops = [
+        _branch(0, "ZEND_JMPZ", 8),
+        _op(1, "ZEND_RETURN"),
+        _op(2, "ZEND_INIT_FCALL_BY_NAME"),
+        _op(3, "ZEND_DO_FCALL_BY_NAME"),
+        _op(8, "ZEND_CONCAT"),
+    ]
+
+    assert _repair_jump_targets(ops) == 1
+    assert ops[0]["jump_targets"] == [2]
+    assert ops[0]["op2"]["num"] == 2
+
+
+def test_valid_branch_target_is_left_alone():
+    from engines.ioncube.runtime_dump import _repair_jump_targets
+
+    ops = [
+        _branch(0, "ZEND_JMPZ", 2),
+        _op(1, "ZEND_RETURN"),
+        _op(2, "ZEND_INIT_FCALL_BY_NAME"),
+    ]
+
+    assert _repair_jump_targets(ops) == 0
+    assert ops[0]["jump_targets"] == [2]
+
+
+def test_guard_branch_repairs_to_after_a_skip_jump():
+    from engines.ioncube.runtime_dump import _repair_jump_targets
+
+    ops = [
+        _branch(0, "ZEND_JMPZ", 9),
+        _op(1, "ZEND_ASSIGN"),
+        _op(2, "ZEND_JMP"),
+        _op(3, "ZEND_INIT_FCALL_BY_NAME"),
+        _op(9, "ZEND_ASSIGN_DIM"),
+    ]
+
+    assert _repair_jump_targets(ops) == 1
+    assert ops[0]["jump_targets"] == [3]
+
+
+def test_foreach_latch_targets_the_fetch_opline():
+    from engines.ioncube.runtime_dump import _repair_jump_targets
+
+    ops = [
+        _op(0, "ZEND_FE_RESET_R"),
+        _op(1, "ZEND_FE_FETCH_R"),
+        _op(2, "ZEND_ASSIGN"),
+        _branch(3, "ZEND_JMP", 0),
+        _op(4, "ZEND_FE_FREE"),
+    ]
+    ops[3]["op2"] = dict(_unused())
+
+    assert _repair_jump_targets(ops) == 1
+    assert ops[3]["jump_targets"] == [1]
+    assert ops[3]["op1"]["num"] == 1

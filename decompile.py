@@ -915,7 +915,40 @@ def clean_php_source(raw_php: str, *, strict_types: bool = False) -> str:
 
     # 6. Apply strict PHP-FIG PER Coding Style formatting
     raw_php = format_per_coding_style(raw_php)
+    raw_php = _drop_undefined_gotos(raw_php)
     return raw_php
+
+
+def _drop_undefined_gotos(code: str) -> str:
+    """Remove gotos whose label was never emitted.
+
+    A jump target that lands inside a structured block cannot get a label, so
+    the goto would make the file fatal at compile time. Falling through is the
+    only interpretation left for such a jump.
+    """
+    defined = set(re.findall(r"^\s*label_(\d+):", code, re.MULTILINE))
+    trailing_newline = code.endswith("\n")
+    lines = code.splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        match = re.match(r"^(\s*)goto\s+label_(\d+);\s*$", lines[index])
+        if not match or match.group(2) in defined:
+            out.append(lines[index])
+            index += 1
+            continue
+        if (
+            out
+            and re.match(r"^\s*if\s*\(.*\)\s*\{\s*$", out[-1])
+            and index + 1 < len(lines)
+            and lines[index + 1].strip() == "}"
+        ):
+            out.pop()
+            index += 2
+            continue
+        index += 1
+    result = "\n".join(out)
+    return result + "\n" if trailing_newline and result else result
 
 
 def _reindent_php(code: str) -> str:

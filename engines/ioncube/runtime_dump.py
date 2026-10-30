@@ -128,6 +128,150 @@ def _plain(value: Any) -> Any:
     return value
 
 
+# The dumper restores the loader's in-memory opcode array, whose jump operands
+# are still partially scrambled by ionCube's per-opline word encoding.  A handful
+# of structurally unambiguous cases can be repaired without guessing: a branch
+# that lands in the middle of an expression, and a foreach latch.
+_CONDITIONAL_JUMPS = frozenset(
+    {
+        "ZEND_JMPZ",
+        "ZEND_JMPNZ",
+        "ZEND_JMPZ_EX",
+        "ZEND_JMPNZ_EX",
+        "ZEND_JMP_SET",
+        "ZEND_COALESCE",
+    }
+)
+_TERMINATORS = frozenset({"ZEND_RETURN", "ZEND_EXIT", "ZEND_THROW"})
+
+# Opcodes that consume temporaries produced by the opline before them.  A branch
+# can never resume here, so such a target is provably wrong.
+_EXPRESSION_CONTINUATIONS = frozenset(
+    {
+        "ZEND_OP_DATA",
+        "ZEND_ADD",
+        "ZEND_SUB",
+        "ZEND_MUL",
+        "ZEND_DIV",
+        "ZEND_MOD",
+        "ZEND_CONCAT",
+        "ZEND_FAST_CONCAT",
+        "ZEND_IS_EQUAL",
+        "ZEND_IS_NOT_EQUAL",
+        "ZEND_IS_IDENTICAL",
+        "ZEND_IS_NOT_IDENTICAL",
+        "ZEND_IS_SMALLER",
+        "ZEND_IS_SMALLER_OR_EQUAL",
+        "ZEND_BOOL",
+        "ZEND_CAST",
+        "ZEND_ADD_ARRAY_ELEMENT",
+        "ZEND_ASSIGN_DIM",
+        "ZEND_ASSIGN_DIM_OP",
+        "ZEND_ASSIGN_OBJ",
+        "ZEND_ASSIGN_OBJ_OP",
+        "ZEND_ASSIGN_STATIC_PROP",
+        "ZEND_ASSIGN_STATIC_PROP_OP",
+        "ZEND_ASSIGN_REF",
+        "ZEND_ASSIGN_OP",
+        "ZEND_SEND_VAL",
+        "ZEND_SEND_VAL_EX",
+        "ZEND_SEND_VAR",
+        "ZEND_SEND_VAR_EX",
+        "ZEND_SEND_VAR_NO_REF",
+        "ZEND_SEND_VAR_NO_REF_EX",
+        "ZEND_ROPE_ADD",
+        "ZEND_ROPE_END",
+        "ZEND_SEPARATE",
+        "ZEND_FETCH_DIM_FUNC_ARG",
+        "ZEND_FETCH_DIM_R",
+        "ZEND_FETCH_DIM_W",
+        "ZEND_FETCH_DIM_RW",
+        "ZEND_FETCH_OBJ_R",
+        "ZEND_FETCH_OBJ_W",
+    }
+)
+
+
+# A guard body is small: `if (cond) { return; }` or `if (cond) { ... } else { ... }`.
+# Anything longer than this is not treated as a guard, because the first
+# terminator past a longer run belongs to a later statement.
+_GUARD_SCAN_LIMIT = 8
+
+
+def _resume_after_guard(
+    ops: list[dict[str, Any]], index: int, stored_target: int
+) -> int | None:
+    """Opline after a guard body that ends in return/exit/throw or a skip JMP."""
+    limit = min(len(ops), index + 1 + _GUARD_SCAN_LIMIT, max(stored_target, index + 2))
+    for scan in range(index + 1, limit):
+        name = ops[scan].get("opcode_name")
+        if name == "ZEND_NOP":
+            continue
+        if name in _TERMINATORS:
+            return scan + 1 if scan + 1 < len(ops) else None
+        if name == "ZEND_JMP":
+            return scan + 1 if scan + 1 < len(ops) else None
+    return None
+
+
+def _foreach_fetch_header(ops: list[dict[str, Any]], latch: int) -> int | None:
+    """FE_FETCH opline a foreach back-edge must return to."""
+    for scan in range(latch - 1, max(-1, latch - 128), -1):
+        if ops[scan].get("opcode_name") in {"ZEND_FE_FETCH_R", "ZEND_FE_FETCH_RW"}:
+            return scan
+        if ops[scan].get("opcode_name") in {"ZEND_FE_RESET_R", "ZEND_FE_RESET_RW"}:
+            return None
+    return None
+
+
+def _set_jump_target(op: dict[str, Any], target: int) -> None:
+    """Point both the reported targets and the raw operand at *target*.
+
+    The operand word is what the adapter turns back into a jump target, so a
+    repair that only rewrites ``jump_targets`` would leave the branch without a
+    usable destination.
+    """
+    op["jump_targets"] = [target]
+    operand = op.get("op1") if op.get("opcode_name") == "ZEND_JMP" else op.get("op2")
+    if isinstance(operand, dict):
+        for key in ("num", "constant", "opline_num"):
+            if key in operand:
+                operand[key] = target
+
+
+def _repair_jump_targets(ops: list[dict[str, Any]]) -> int:
+    """Rewrite the jump targets that are structurally impossible. Returns count."""
+    repaired = 0
+    for index, op in enumerate(ops):
+        targets = op.get("jump_targets") or []
+        if not targets:
+            continue
+        target = targets[0]
+        name = op.get("opcode_name")
+        target_name = ops[target].get("opcode_name") if 0 <= target < len(ops) else None
+
+        if name in _CONDITIONAL_JUMPS:
+            if target_name is not None and target_name not in _EXPRESSION_CONTINUATIONS:
+                continue
+            resume = _resume_after_guard(ops, index, target)
+            if resume is not None and resume != target:
+                _set_jump_target(op, resume)
+                repaired += 1
+        elif name == "ZEND_JMP" and target < index:
+            # A foreach back-edge belongs on FE_FETCH, never on the FE_RESET
+            # prologue or inside an expression.
+            if target_name not in _EXPRESSION_CONTINUATIONS and target_name not in {
+                "ZEND_FE_RESET_R",
+                "ZEND_FE_RESET_RW",
+            }:
+                continue
+            header = _foreach_fetch_header(ops, index)
+            if header is not None:
+                _set_jump_target(op, header)
+                repaired += 1
+    return repaired
+
+
 _ZEND_TO_IC_TYPE = {
     "IS_CONST": 1,
     "IS_TMP_VAR": 2,
@@ -325,6 +469,10 @@ def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
     op_arrays: dict[str, dict[str, Any]] = {}
     function_index: dict[str, str] = {}
     class_index: dict[str, dict[str, Any]] = {}
+
+    for raw in (runtime_ir.get("op_arrays") or {}).values():
+        if isinstance(raw, dict) and isinstance(raw.get("opcodes"), list):
+            _repair_jump_targets(raw["opcodes"])
 
     for op_id, raw in (runtime_ir.get("op_arrays") or {}).items():
         if not isinstance(raw, dict):

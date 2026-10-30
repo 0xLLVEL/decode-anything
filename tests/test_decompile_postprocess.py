@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from decompile import (
+    _drop_undefined_gotos,
     _invert_condition,
     _invert_empty_if_guards,
     _normalize_psr4_namespaces,
@@ -403,3 +404,41 @@ def test_loop_exit_guards_become_structured_breaks():
     assert "$fn = function (bool $skip) use ($items) {" in normalized
     assert "        return true;\n    };" in normalized
     assert validate_php_structure(result) == (True, "")
+
+
+def test_goto_without_a_label_is_dropped():
+    code = """<?php
+function f() {
+    goto label_9;
+}
+"""
+
+    assert "goto" not in _drop_undefined_gotos(code)
+
+
+def test_goto_with_a_label_is_kept():
+    code = """<?php
+function f() {
+    goto label_9;
+    label_9:
+    return;
+}
+"""
+
+    assert "goto label_9;" in _drop_undefined_gotos(code)
+
+
+def test_dangling_goto_takes_its_single_statement_if_with_it():
+    code = """<?php
+function f($x) {
+    if ($x) {
+        goto label_9;
+    }
+    return 1;
+}
+"""
+
+    result = _drop_undefined_gotos(code)
+    assert "goto" not in result
+    assert "if ($x)" not in result
+    assert "return 1;" in result
