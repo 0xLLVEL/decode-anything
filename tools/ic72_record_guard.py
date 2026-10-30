@@ -253,6 +253,66 @@ def protect(process: int, address: int, size: int, flags: int) -> bool:
     )
 
 
+def read_c_string(process: int, pointer: int, limit: int = 260) -> str:
+    if not pointer:
+        return ""
+    raw = read_memory(process, pointer, limit)
+    end = raw.find(b"\0")
+    return raw[: end if end >= 0 else len(raw)].decode("latin1", "replace")
+
+
+def read_zend_string(process: int, pointer: int, limit: int = 260) -> str:
+    if not pointer:
+        return ""
+    length = read_memory(process, pointer + 0x0C, 4)
+    if len(length) != 4:
+        return ""
+    size = min(struct.unpack_from("<I", length, 0)[0], limit)
+    return read_memory(process, pointer + 0x10, size).decode("latin1", "replace")
+
+
+def find_export(process: int, base: int, name: str) -> int | None:
+    dos = read_memory(process, base, 0x40)
+    if len(dos) != 0x40 or dos[:2] != b"MZ":
+        return None
+    pe = struct.unpack_from("<I", dos, 0x3C)[0]
+    nt = read_memory(process, base + pe, 0x18)
+    if len(nt) != 0x18 or nt[:4] != b"PE\0\0":
+        return None
+    opt_size = struct.unpack_from("<H", nt, 20)[0]
+    opt = read_memory(process, base + pe + 24, opt_size)
+    if len(opt) < 0x60:
+        return None
+    magic = struct.unpack_from("<H", opt, 0)[0]
+    dd = 96 if magic == 0x10B else 112
+    exp_rva, exp_size = struct.unpack_from("<II", opt, dd)
+    if not exp_rva or not exp_size:
+        return None
+    exp = read_memory(process, base + exp_rva, 40)
+    if len(exp) != 40:
+        return None
+    n_names = struct.unpack_from("<I", exp, 24)[0]
+    funcs_rva = struct.unpack_from("<I", exp, 28)[0]
+    names_rva = struct.unpack_from("<I", exp, 32)[0]
+    ords_rva = struct.unpack_from("<I", exp, 36)[0]
+    names = read_memory(process, base + names_rva, n_names * 4)
+    if len(names) != n_names * 4:
+        return None
+    for index in range(n_names):
+        name_rva = struct.unpack_from("<I", names, index * 4)[0]
+        raw = read_memory(process, base + name_rva, 64)
+        end = raw.find(b"\0")
+        if end < 0 or raw[:end].decode("latin1") != name:
+            continue
+        ordinal = struct.unpack_from(
+            "<H", read_memory(process, base + ords_rva + index * 2, 2), 0
+        )[0]
+        return base + struct.unpack_from(
+            "<I", read_memory(process, base + funcs_rva + ordinal * 4, 4), 0
+        )[0]
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--php", required=True, type=Path)
@@ -282,19 +342,38 @@ def main() -> int:
         help="guard region base + guard-offset instead of the write frontier",
     )
     parser.add_argument("--bp", action="append", default=[])
+    parser.add_argument(
+        "--dump-bp",
+        action="append",
+        default=[],
+        help="RVA whose hit dumps ecx[0..edx) to --dump-to",
+    )
+    parser.add_argument("--dump-to", type=Path, default=None)
+    parser.add_argument(
+        "--oparray-bp",
+        action="append",
+        default=[],
+        help="RVA whose hit treats eax as a zend_op_array and dumps it",
+    )
     parser.add_argument("--log", type=Path, default=Path("scratch/ic72_record_guard.jsonl"))
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--show-output", action="store_true")
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="start guarding when zend_compile_file is entered",
+    )
     args = parser.parse_args()
 
     marker = bytes.fromhex(args.marker)
     ini = Path(tempfile.gettempdir()) / "ic72_record_guard.ini"
     ini.write_text(
-        "[PHP]\r\n"
-        "error_reporting = 0\r\n"
-        "display_errors = On\r\n"
-        f'zend_extension = "{args.loader.resolve()}"\r\n',
+        "[PHP]\n"
+        "error_reporting = 0\n"
+        "display_errors = On\n"
+        f'zend_extension = "{args.loader.resolve()}"\n',
         encoding="utf-8",
+        newline="\r\n",
     )
     command = (
         f'"{args.php.resolve()}" -c "{ini}" -r "include $argv[1];" -- '
@@ -329,7 +408,19 @@ def main() -> int:
     known_bases: set[int] = set()
     guarded: dict[int, bool] = {}
     started = time.monotonic()
-    state = {"watch_address": 0, "hits": 0, "done": False, "guarded": 0}
+    state = {
+        "watch_address": 0,
+        "hits": 0,
+        "done": False,
+        "guarded": 0,
+        "guard_start": not args.auto,
+        "compile_hook": 0,
+        "compile_symbol": 0,
+        "hook_filter": 0,
+        "hook_decoder": 0,
+        "dump_sites": {int(spec, 0) for spec in args.dump_bp},
+        "oparray_sites": {int(spec, 0) for spec in args.oparray_bp},
+    }
 
     def log(entry: dict[str, object]) -> None:
         entry["t"] = round(time.monotonic() - started, 4)
@@ -339,6 +430,9 @@ def main() -> int:
     def guard_worker() -> None:
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline and not state["done"]:
+            if not state["guard_start"]:
+                time.sleep(0.0005)
+                continue
             region = MEMORY_BASIC_INFORMATION64()
             address = 0
             while address < 0x7FFF0000:
@@ -381,7 +475,45 @@ def main() -> int:
         """Keep the int3 bytes in place: the loader unpacks over them early."""
 
         deadline = time.monotonic() + args.timeout
-        while time.monotonic() < deadline and not state["done"] and module_base:
+        while time.monotonic() < deadline and not state["done"]:
+            if not module_base:
+                time.sleep(0.001)
+                continue
+            # The loader installs its zend_compile_file shim after DLL load,
+            # so poll the export slot instead of arming once at load time.
+            if (
+                args.auto
+                and state["compile_symbol"]
+                and not state["compile_hook"]
+            ):
+                pointer = read_memory(process, state["compile_symbol"], 4)
+                if len(pointer) == 4:
+                    hook = struct.unpack_from("<I", pointer, 0)[0]
+                    if hook != state.get("last_pointer"):
+                        state["last_pointer"] = hook
+                        log(
+                            {
+                                "event": "compile-pointer",
+                                "value": hex(hook),
+                                "in_loader": bool(
+                                    module_base
+                                    and module_base <= hook < module_base + 0x100000
+                                ),
+                            }
+                        )
+                    if module_base <= hook < module_base + 0x100000:
+                        original = read_memory(process, hook, 1)
+                        if original and write_memory(process, hook, INT3):
+                            breakpoints[hook] = original
+                            state["compile_hook"] = hook
+                            log(
+                                {
+                                    "event": "bp-armed",
+                                    "rva": hex(hook - module_base),
+                                    "role": "zend_compile_file",
+                                    "polled": True,
+                                }
+                            )
             for target in list(breakpoints):
                 if target in pending:
                     continue
@@ -389,7 +521,7 @@ def main() -> int:
                     write_memory(process, target, INT3)
             time.sleep(0.002)
 
-    if args.guard:
+    if args.guard or args.auto:
         threading.Thread(target=guard_worker, daemon=True).start()
     threading.Thread(target=bp_worker, daemon=True).start()
 
@@ -426,6 +558,42 @@ def main() -> int:
                             "mz": read_memory(process, dll_base, 2).hex(),
                         }
                     )
+                    if args.auto:
+                        for known in list(known_bases):
+                            symbol = find_export(process, known, "zend_compile_file")
+                            if not symbol:
+                                continue
+                            pointer = read_memory(process, symbol, 4)
+                            if len(pointer) != 4:
+                                continue
+                            hook = struct.unpack_from("<I", pointer, 0)[0]
+                            log(
+                                {
+                                    "event": "compile-hook",
+                                    "dll": hex(known),
+                                    "pointer": hex(hook),
+                                    "rva": hex(hook - dll_base)
+                                    if dll_base <= hook < dll_base + 0x100000
+                                    else None,
+                                }
+                            )
+                            if state["compile_symbol"] == 0:
+                                state["compile_symbol"] = symbol
+                            if (
+                                dll_base <= hook < dll_base + 0x100000
+                                and hook not in breakpoints
+                            ):
+                                original = read_memory(process, hook, 1)
+                                if original and write_memory(process, hook, INT3):
+                                    breakpoints[hook] = original
+                                    state["compile_hook"] = hook
+                                    log(
+                                        {
+                                            "event": "bp-armed",
+                                            "rva": hex(hook - dll_base),
+                                            "role": "zend_compile_file",
+                                        }
+                                    )
                     for spec in args.bp:
                         target = dll_base + int(spec, 0)
                         if target in breakpoints:
@@ -560,6 +728,83 @@ def main() -> int:
                             context.set(handle)
                         pending.pop(fault, None)
                 elif exception_code in BREAKPOINT_CODES and fault in breakpoints:
+                    if handle and context.get(handle) and fault in (
+                        state.get("hook_filter"),
+                        state.get("hook_decoder"),
+                    ):
+                        file_handle = context.u32(CTX_ECX)
+                        raw = read_memory(process, file_handle + 0x2C, 4)
+                        log(
+                            {
+                                "event": "compile-body",
+                                "eip": hex(fault),
+                                "rva": hex(fault - (module_base or 0)),
+                                "zend_file_handle": hex(file_handle),
+                                "path": read_c_string(
+                                    process,
+                                    struct.unpack_from("<I", raw, 0)[0]
+                                    if len(raw) == 4
+                                    else 0,
+                                ),
+                                "esp": hex(context.u32(CTX_ESP)),
+                                "ret": hex(
+                                    struct.unpack_from(
+                                        "<I",
+                                        read_memory(
+                                            process, context.u32(CTX_ESP), 4
+                                        ),
+                                        0,
+                                    )[0]
+                                ),
+                            }
+                        )
+                    if handle and context.get(handle) and fault == state["compile_hook"]:
+                        handle_ptr = context.u32(CTX_ECX)
+                        path = ""
+                        string_ptr = read_memory(process, handle_ptr, 4)
+                        if len(string_ptr) == 4:
+                            string = struct.unpack_from("<I", string_ptr, 0)[0]
+                            length = read_memory(process, string + 0x0C, 4)
+                            if len(length) == 4:
+                                size = min(struct.unpack_from("<I", length, 0)[0], 260)
+                                raw = read_memory(process, string + 0x10, size)
+                                path = raw.decode("latin1", "replace")
+                        file_handle = context.u32(CTX_EDI)
+                        path = read_c_string(
+                            process,
+                            struct.unpack_from(
+                                "<I", read_memory(process, file_handle + 0x2C, 4), 0
+                            )[0]
+                            if len(read_memory(process, file_handle + 0x2C, 4)) == 4
+                            else 0,
+                        )
+                        log(
+                            {
+                                "event": "compile-hit",
+                                "eip": hex(fault),
+                                "zend_file_handle": hex(file_handle),
+                                "path": path,
+                            }
+                        )
+                        # 0x62F30 does a filename filter at 0x62E80, then hands
+                        # the handle to the real decoder at 0x6D970.
+                        for delta, role in ((0xAA40, "decoder"), (-0xB0, "filter")):
+                            body = fault + delta
+                            if body in breakpoints:
+                                continue
+                            original = read_memory(process, body, 1)
+                            if original and write_memory(process, body, INT3):
+                                breakpoints[body] = original
+                                state[f"hook_{role}"] = body
+                                log(
+                                    {
+                                        "event": "bp-armed",
+                                        "rva": hex(body - (module_base or 0)),
+                                        "role": role,
+                                    }
+                                )
+                        if args.guard:
+                            state["guard_start"] = True
                     if handle and context.get(handle):
                         log(
                             {
@@ -582,6 +827,68 @@ def main() -> int:
                         )
                         context.set(handle)
                         pending[fault] = tid
+                        if fault - (module_base or 0) in state["oparray_sites"]:
+                            # 0x63048 is `pop edi`; the op_array is still in esi.
+                            op_array = context.u32(CTX_ESI)
+                            raw = read_memory(process, op_array, 0x80)
+                            words = (
+                                [hex(v) for v in struct.unpack("<32I", raw)]
+                                if len(raw) == 0x80
+                                else []
+                            )
+                            last = (
+                                struct.unpack_from("<I", raw, 32)[0]
+                                if len(raw) == 0x80
+                                else 0
+                            )
+                            opcodes = (
+                                struct.unpack_from("<I", raw, 36)[0]
+                                if len(raw) == 0x80
+                                else 0
+                            )
+                            body = read_memory(process, opcodes, 0x200) if opcodes else b""
+                            if args.dump_to and raw:
+                                args.dump_to.parent.mkdir(
+                                    parents=True, exist_ok=True
+                                )
+                                args.dump_to.write_bytes(
+                                    raw + (b"\n" + body if body else b"")
+                                )
+                            log(
+                                {
+                                    "event": "oparray",
+                                    "rva": hex(fault - (module_base or 0)),
+                                    "op_array": hex(op_array),
+                                    "words": words,
+                                    "last": last,
+                                    "opcodes": hex(opcodes),
+                                    "ops_head": body[:96].hex(),
+                                    "saved": str(args.dump_to) if raw else None,
+                                }
+                            )
+                        if fault - (module_base or 0) in state["dump_sites"]:
+                            buffer = context.u32(CTX_ECX)
+                            length = context.u32(CTX_EDX)
+                            payload = (
+                                read_memory(process, buffer, length)
+                                if length < 0x400000
+                                else b""
+                            )
+                            if args.dump_to and payload:
+                                args.dump_to.parent.mkdir(
+                                    parents=True, exist_ok=True
+                                )
+                                args.dump_to.write_bytes(payload)
+                            log(
+                                {
+                                    "event": "dump-buffer",
+                                    "rva": hex(fault - (module_base or 0)),
+                                    "buffer": hex(buffer),
+                                    "length": length,
+                                    "saved": str(args.dump_to) if payload else None,
+                                    "head": payload[:64].hex(),
+                                }
+                            )
                 else:
                     status = DBG_EXCEPTION_NOT_HANDLED
             finally:

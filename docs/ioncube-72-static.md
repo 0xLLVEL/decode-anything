@@ -259,5 +259,170 @@ also keeps `int3` bytes re-armed (the loader unpacks over early patches) and acc
 fault is passed through, and guarding perturbs the target, so the worker is opt-in (`--guard`).
 
 Status: the body layer stays closed and verified; the record layer still has no confirmed transform.
-The next probe should arm the compile hook from the export pointer (the way the older tool does),
-then set a breakpoint on the first `call` inside it and read the `zend_file_handle` in `ecx`.
+The probe that followed this note (arm the compile hook from the export pointer, break on the first
+`call`, read the `zend_file_handle`) is written up in the next section, and it did not find a record
+transform there — the compile path never touches the bytecode layer.
+
+## Compile-hook chain, traced (32-bit 7.2, `--auto`)
+
+`--auto` in [ic72_record_guard.py](../tools/ic72_record_guard.py) now resolves the chain end to end.
+Three details mattered; each was a wrong assumption before:
+
+1. **The shim is installed after `LOAD_DLL`, not at load time.** The `zend_compile_file` export slot in
+   `php7.dll` reads `0x6eaff700` at load and only later becomes `loader + 0x62F30`. A breakpoint armed at
+   the load event therefore never fires. `--auto` polls the export slot every 2 ms and arms on the
+   transition; observed transition at ~t+0.18 s, hit ~40 ms later.
+2. **The `bp_worker` thread was dead.** Its loop condition included `module_base`, which is `None` when
+   the thread starts, so the body never ran. That is why the older tool's `int3` bytes appeared to
+   survive untouched at exit: nobody was re-arming them.
+3. **The `zend_file_handle` is not in `ecx` at `0x62F30`.** The shim is `push esi; push edi;
+   mov edi, [esp+0xC]`, i.e. a plain cdecl `(zend_file_handle *fh)`. Read `edi`. The filename is the
+   C string at `fh+0x2C` (not a `zend_string` at `fh+0`).
+
+Chain, confirmed with real register values:
+
+| Step | RVA | Evidence |
+|---|---|---|
+| `zend_compile_file` shim | `0x62F30` | `edi = 0x6dfec1c`, `path = ...\binancepay_asli.php` |
+| filename filter, `call` at `0x63005` | `0x62E80` | `ecx` = same handle, returns bool, tail-jumps `0x62E40` |
+| real loader compile | `0x6D970` | `ecx` = same handle, `ret = 0x63015` |
+| raw source buffer handed to `zend_compile_string` | `0x7190` | `ecx = 0x14e76000`, `edx = 0x373D` |
+| op_array postprocess | `0x6C340`, `0x6D500` | `0x6D500` receives `edx = 0x00048487` = the file's `php_flags` |
+
+The buffer at `0x7190` is **byte-identical to the file on disk** (14 141 bytes, same md5):
+`<?php //00407` + header + base64 blob. So the compile path does not decode the record at all —
+it compiles the ionCube stub as ordinary PHP source and the bytecode layer never appears here.
+Reproduced with:
+
+```bash
+python tools/ic72_record_guard.py \
+  --php scratch/refs/ic72dump-opcodes/runtime/php.exe \
+  --loader scratch/refs/ic72dump-opcodes/runtime/ext/ioncube_loader_win_7.2.dll \
+  --target scratch/rt/binancepay_asli.php \
+  --auto --bp 0x7190 --dump-bp 0x7190 --dump-to scratch/ic72_plain_buffer.php
+```
+
+Consequence for M3/M4: the record decoder is a **runtime** component (the loader's own opcode
+handler), not part of `zend_compile_file`. Any further breakpoints belong on the execute path
+(`execute_internal`, the `zend_vm` handlers the loader swaps in), not on the compile hook.
+
+Loader/CPU note: `loader/ioncube_loader_win_7.2.dll` is the **x64** build (machine `0x8664`,
+image base `0x180000000`) and cannot load into the 32-bit CLI. The 32-bit build used above is
+`scratch/refs/ic72dump-opcodes/runtime/ext/ioncube_loader_win_7.2.dll` (machine `0x14C`,
+base `0x10000000`), which is the one all the `0x1xxxxx` RVAs refer to.
+
+## The text layer is base64 — located and proven
+
+Found through IDA Pro (attached session, ~/Documents/decode-anything/loader/ioncube_loader_win_7.2.dll)
+driven by REA:
+
+```bash
+REA_IDA_MCP_CONFIG=scratch/rea-ida.json rea decompile \
+  loader/ioncube_loader_win_7.2.dll 0x18007BA00 --provider ida --format json
+```
+
+### Record parser
+
+| Build | Function | Size | Role |
+|---|---|---|---|
+| x64 | `sub_18007BA00` | `0x753` | record parser / dispatcher |
+| x86 | `0x6C340` | — | same function (identical magic list at `0x6C4CF`..`0x6C517`) |
+
+It requires `[ctx+48] >= 0xE`, reads a 14-byte tag and compares it with the constant returned by
+`sub_18007EBB0(&unk_1800C5EF8)`. On mismatch it decodes a 5-character `isxdigit`/`tolower` field
+(`v15 = 16*v15 + digit`, `-39` for `a`..`f`) into a 20-bit seek offset, seeks, and reads a 4-byte
+magic. The dispatch table, read straight off the pseudocode:
+
+| Magic | Bytes as ASCII | Action |
+|---|---|---|
+| `0x632B5248` | `HR+c` | **base64 mode**: `emalloc`, `sub_180074140(text, len, out)`, then continue parsing |
+| `0xDEADC0DE` | — | older record family |
+| `0x3FBC2883` | — | older record family |
+| `0x882BC103` | — | older record family |
+| `0x0217582F` | — | older record family |
+| `0x149FEC13` | — | older record family |
+| `0x67A6BF45` | — | inner record magic (what the sample decodes to) |
+| `0x9EB67AC2` | — | older record family |
+
+For anything in the second group it scans up to 64 dwords for one of
+`0x632B5248`(`HR+c`) / `0x566F2B34` / `0x4E577242` / `0x68347930` / `0x7367646D`, rewinds to the
+start of the collected segment, and hands it to `sub_18000B830` (x86: `sub_10009BB0`), which is a
+buffer allocator plus read; the CR stripping loop (`al == 13`) follows immediately.
+
+### The base64 decoder
+
+| Build | Address | Notes |
+|---|---|---|
+| x64 | `sub_180073F90` (thunk `sub_180074140`) | `char *in, int len, char *out` |
+| x86 | `sub_10065D50` (thunk `sub_10065EC0`, helper `sub_10065D30` maps error codes) | `ecx = in`, `edx = len`, `out` as 3rd argument |
+| x64 table | `0x1800A92A0` | 256-byte reverse map, `0xFF` = invalid |
+| x86 table | `byte_10093BC0` (VA `0x10093BC0`, RVA `0x93BC0`) | byte-identical to the x64 table |
+
+The x86 pseudocode from IDA (`rea decompile ... 0x10065D50`) states the algorithm literally:
+`out[i] = 4 * tab[c]`, `out[i] |= tab[c2] >> 4`, `out[i+1] = 16 * tab[c2]`, and so on, with an
+`isspace` skip loop before each character and a `break` on `'='` (61).
+
+### Call site, verified by xref
+
+`rea xrefs` on the 32-bit binary gives exactly two callers of the thunk:
+
+```
+0x1006C753  inside sub_1006C340   <- the record parser (the one 0x6D970 calls)
+0x1006DE40  inside sub_1006DD70
+```
+
+At `0x6C523` the parser compares the 4-byte magic with `0x632B5248` and jumps to `0x6C720`,
+which seeks back 4, `emalloc`s `len`, and calls the decoder at `0x6C753`. Right after it
+(`0x6C766`) re-reads a 4-byte header from the decoded buffer and XORs it with `0x2853CEF2`.
+The other magic group (`0x632B5248 / 0x566F2B34 / 0x4E577242 / 0x68347930 / 0x7367646D`) branches
+to `0x6C5CD`, which calls `sub_10009BB0` — that one is a **buffer allocator**, not an inflate
+(`v5 = alloc((len & 0xDFFFFFFF) + flag)` then reads `len = alloc(sizeof(out_buffer))`), so the
+decompressed-body step is still a separate, unidentified routine.
+
+The table is the **standard** base64 reverse map (`A-Z`→0..25, `a-z`→26..51, `0-9`→52..61,
+`+`→62, `/`→63), built as a 256-entry lookup so validation and decoding are one load. Decode:
+
+```c
+while (isspace(c = *in++)) ;        // whitespace skipped anywhere
+if (c == '=') break;                // '=' terminates the stream
+v0 = tab[c]; out[0]  = 4 * v0;
+if (c == '=') break; v1 = tab[c]; out[0] |= v1 >> 4; out[1]  = 16 * v1;
+if (c == '=') break; v2 = tab[c]; out[1] |= v2 >> 2; out[2]  = v2 << 6;
+if (c == '=') break; v3 = tab[c]; out[2] |= v3;
+```
+
+### Proof
+
+The sample's text starts with the literal `HR+c`, which **is** the `0x632B5248` base64 marker. Decoding
+the blob from that marker with the table above yields **9 699 bytes** whose first dword is
+`0x67A6BF45` — the inner record magic, accepted by the same parser on its next pass. Reproduce:
+
+```python
+img = pe.get_memory_mapped_image()
+tbl = img[0xA92A0:0xA92A0 + 256]        # x64 table at VA 0x1800A92A0
+vals = []
+for ch in blob:                     # blob = bytes after '?>\n'
+    if ch in b" \t\r\n":
+        continue
+    if ch == 0x3D:                  # '=' ends the stream
+        break
+    if tbl[ch] < 64:
+        vals.append(tbl[ch])
+out = bytearray()
+for k in range(0, len(vals) - 3, 4):
+    a, b, c, d = vals[k : k + 4]
+    out.append((a << 2 | b >> 4) & 0xFF)
+    out.append(((b & 0xF) << 4 | c >> 2) & 0xFF)
+    out.append(((c & 3) << 6 | d) & 0xFF)
+```
+
+`base64.b64decode` instead returns 9 700 bytes at a one-byte offset and misses the magic. The loader
+skips whitespace *anywhere* in the stream and stops at the first `=` instead of treating the text as
+one contiguous block — that difference is why every earlier attempt at the record layer failed.
+
+What the decoded blob is not: a zlib stream. Raw-deflate over `blob[0..512]` at every start offset
+produces nothing, so the base64 layer is only the outer text envelope — the binary underneath is
+still the encrypted sv5 record, same conclusion as the earlier cipher sweeps.
+
+The helper at `0x49C0` that fires first inside `0x6D970` is a basename/extension comparison, not a
+decoder; the `0x6F620` cluster is a `[...]`/`=`-aware pattern matcher used by the licence check.
