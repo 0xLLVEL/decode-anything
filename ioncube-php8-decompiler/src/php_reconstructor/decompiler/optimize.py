@@ -27,7 +27,9 @@ _INVERTED_COMPARISON = {
 
 
 def optimize(node: php.PhpFile) -> php.PhpFile:
-    node.statements = _prune_unreferenced_labels(_optimize_stmts(node.statements))
+    node.statements = _prune_unreferenced_labels(
+        _normalize_null_returns(_optimize_stmts(node.statements))
+    )
     return node
 
 
@@ -108,8 +110,7 @@ def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
             bool(stmt.return_type and stmt.return_type.lower() == "void")
         )
         body = _optimize_stmts(stmt.body)
-        if is_void_or_ctor:
-            body = _normalize_void_returns(body)
+        body = _normalize_null_returns(body, force=is_void_or_ctor)
         stmt.body = _prune_unreferenced_labels(
             _drop_trailing_bare_return(
                 body,
@@ -127,8 +128,7 @@ def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
                 bool(method.return_type and method.return_type.lower() == "void")
             )
             body = _optimize_stmts(method.body)
-            if is_void_or_ctor:
-                body = _normalize_void_returns(body)
+            body = _normalize_null_returns(body, force=is_void_or_ctor)
             method.body = _prune_unreferenced_labels(
                 _drop_trailing_bare_return(
                     body,
@@ -335,28 +335,46 @@ def _drop_dead_code_after_terminal(stmts: list[php.Stmt]) -> list[php.Stmt]:
     return out
 
 
-def _normalize_void_returns(stmts: list[php.Stmt]) -> list[php.Stmt]:
-    """In constructor and : void functions, convert `return null;` to bare `return;`."""
+def _is_null_value(expr: php.Expr | None) -> bool:
+    return expr is None or (isinstance(expr, php.Literal) and expr.value is None)
+
+
+def _iter_returns(stmts: list[php.Stmt]):
+    """Yield every `return` reachable in this body, skipping nested closures."""
     for s in stmts:
         if isinstance(s, php.ReturnStmt):
-            if s.value is None or (isinstance(s.value, php.Literal) and s.value.value is None):
-                s.value = None
+            yield s
         elif isinstance(s, php.IfStmt):
-            _normalize_void_returns(s.then)
+            yield from _iter_returns(s.then)
             for _, b in s.elifs:
-                _normalize_void_returns(b)
-            _normalize_void_returns(s.orelse)
+                yield from _iter_returns(b)
+            yield from _iter_returns(s.orelse)
         elif isinstance(s, (php.WhileStmt, php.DoWhileStmt, php.ForeachStmt)):
-            _normalize_void_returns(s.body)
+            yield from _iter_returns(s.body)
         elif isinstance(s, php.TryStmt):
-            _normalize_void_returns(s.body)
+            yield from _iter_returns(s.body)
             for c in s.catches:
-                _normalize_void_returns(c.body)
+                yield from _iter_returns(c.body)
             if s.finally_body:
-                _normalize_void_returns(s.finally_body)
+                yield from _iter_returns(s.finally_body)
         elif isinstance(s, php.SwitchStmt):
             for c in s.cases:
-                _normalize_void_returns(c.body)
+                yield from _iter_returns(c.body)
+
+
+def _normalize_null_returns(
+    stmts: list[php.Stmt], force: bool = False
+) -> list[php.Stmt]:
+    """`return;` and `return null;` compile to the same ZEND_RETURN, so the source
+    spelling is not recoverable. Use bare `return;` for void/constructor bodies and
+    for bodies that never return a non-null value; keep `return null;` where the
+    function returns real values elsewhere and null is a meaningful result.
+    """
+    if not force and not all(_is_null_value(r.value) for r in _iter_returns(stmts)):
+        return stmts
+    for r in _iter_returns(stmts):
+        if _is_null_value(r.value):
+            r.value = None
     return stmts
 
 

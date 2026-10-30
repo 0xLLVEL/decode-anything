@@ -410,7 +410,7 @@ def test_converging_branch_fixture_is_not_rewritten():
 
     php = emit_php(optimize(decompile_program(parse_dump(rewritten))))
     normalized = php.replace("\r\n", "\n")
-    assert "if ($a) {\n        return null;\n    }\n    return null;" in normalized
+    assert "function converge($a) {\n    if ($a) {\n        return;\n    }\n}" in normalized
     assert not re.search(r"if \(\$a\) \{\s*\}", normalized)
 
 
