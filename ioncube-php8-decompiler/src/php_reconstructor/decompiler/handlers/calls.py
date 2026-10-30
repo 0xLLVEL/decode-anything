@@ -7,9 +7,18 @@ from ...decompiler.context import CallFrame, DecompileContext
 from ...opcode import Opcode
 from . import opcode_handler
 
-# ZEND_INIT_STATIC_METHOD_CALL with an IS_UNUSED class operand encodes the
-# relative class in the low bits of extended_value (zend_fetch_class_type).
+# ZEND_INIT_STATIC_METHOD_CALL / ZEND_NEW with an IS_UNUSED class operand
+# encode the relative class (zend_fetch_class_type) in op1.num.
 _RELATIVE_CLASS = {1: "self", 2: "parent", 3: "static"}
+
+
+def _relative_class(op: Opcode) -> str:
+    fetch_type = 0
+    if op.op1.var is not None:
+        fetch_type = op.op1.var & 0x0F
+    if fetch_type not in _RELATIVE_CLASS:
+        fetch_type = (op.extended_value or 0) & 0x0F
+    return _RELATIVE_CLASS.get(fetch_type, "self")
 
 
 def _const_str(ctx: DecompileContext, op: Opcode, operand) -> object:
@@ -49,10 +58,7 @@ def handle_init_method_call(ctx: DecompileContext, op: Opcode) -> None:
 @opcode_handler("ZEND_INIT_STATIC_METHOD_CALL")
 def handle_init_static_method_call(ctx: DecompileContext, op: Opcode) -> None:
     if op.op1.is_unused:
-        fetch_type = (op.extended_value or 0) & 0x0F
-        if not fetch_type and op.op1.var is not None:
-            fetch_type = op.op1.var & 0x0F
-        class_name: object = _RELATIVE_CLASS.get(fetch_type, "self")
+        class_name: object = _relative_class(op)
     else:
         class_name = _const_str(ctx, op, op.op1)
     name = _const_str(ctx, op, op.op2)
@@ -64,10 +70,7 @@ def handle_init_static_method_call(ctx: DecompileContext, op: Opcode) -> None:
 @opcode_handler("ZEND_NEW")
 def handle_new(ctx: DecompileContext, op: Opcode) -> None:
     if op.op1.is_unused:
-        fetch_type = (op.extended_value or 0) & 0x0F
-        if not fetch_type and op.op1.var is not None:
-            fetch_type = op.op1.var & 0x0F
-        class_name: object = _RELATIVE_CLASS.get(fetch_type, "self")
+        class_name: object = _relative_class(op)
     else:
         class_name = _const_str(ctx, op, op.op1)
     ctx.call_stack.append(
