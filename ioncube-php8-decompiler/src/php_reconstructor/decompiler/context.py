@@ -167,6 +167,9 @@ class DecompileContext:
 def literal_to_expr(value: Any) -> php.Expr:
     """Convert an unwrapped PHP literal (from safe_value) into an AST node."""
     if isinstance(value, dict):
+        ref_name = value.get("__constant_ref__")
+        if isinstance(ref_name, str) and ref_name:
+            return php.ConstFetch(name=ref_name)
         items = []
         keys = list(value.keys())
         is_list = all(

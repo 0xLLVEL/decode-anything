@@ -1195,6 +1195,53 @@ def _decode_property_default(
     return True, value
 
 
+def _decode_constant_ast(payload: bytes | None) -> dict | None:
+    """Decode a serialized ``ZEND_AST_CONSTANT`` node (kind 65).
+
+    Payload layout after the high-bit format marker::
+
+        @:<kind>:<attr>:<lineno>;s<len>'<constant-name>...
+
+    ``attr & 0x800`` is ``IS_CONSTANT_UNQUALIFIED_IN_NAMESPACE``: the source
+    used an unqualified name and PHP's runtime namespace fallback applies.
+    """
+    if not payload:
+        return None
+    raw = payload[1:] if payload[0] >= 0x80 else payload
+    match = re.match(rb"@:(\d+):(\d+):(\d+);s(\d+)'", raw)
+    if not match:
+        return None
+    kind, attr = int(match.group(1)), int(match.group(2))
+    if kind != 65:  # ZEND_AST_CONSTANT
+        return None
+    length = int(match.group(4))
+    start = match.end()
+    if start + length > len(raw):
+        return None
+    try:
+        name = raw[start:start + length].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    return {"name": name, "unqualified": bool(attr & 0x800)}
+
+
+def _constant_ref_name(raw_name: str, unqualified: bool, class_name: str) -> str:
+    """Reconstruct the source spelling of a constant used in a class constant.
+
+    ``IS_CONSTANT_UNQUALIFIED_IN_NAMESPACE`` only says the source omitted the
+    leading namespace separator.  If the resolved name lives in the class's own
+    namespace, emit the bare basename so PHP's namespace fallback still applies.
+    Imported or parent-namespace constants keep their full name.
+    """
+    if unqualified:
+        namespace = class_name.rpartition("\\")[0]
+        if namespace and raw_name.startswith(namespace + "\\"):
+            return raw_name[len(namespace) + 1:]
+        if "\\" not in raw_name:
+            return raw_name
+    return "\\" + raw_name.lstrip("\\")
+
+
 def _read_attributes(buf: bytes, off: int) -> int:
     """sub_100A0240: u32 count (signed; ``<= 0`` → none) + count attribute entries
     (sub_100A0150)."""
@@ -1407,6 +1454,7 @@ def _consume_class_tail(buf: bytes, off: int, *, php_version: int) -> dict:
                 "name": cname.decode("latin1", "replace"),
                 "has_value": has_value,
                 "value": value,
+                "constant_ref": None if has_value else _decode_constant_ast(payload),
             })
 
     off = _read_trait_uses(buf, off)
@@ -1968,8 +2016,16 @@ def dump_file_to_ir(
                     properties_info[pname] = entry
                 for c in tail["constants"]:
                     cname = c["name"]
-                    if cname and c["has_value"]:
+                    if not cname:
+                        continue
+                    if c["has_value"]:
                         constants_table[cname] = {"value": safe_value(c["value"])}
+                    elif c.get("constant_ref"):
+                        ref = c["constant_ref"]
+                        ref_name = _constant_ref_name(
+                            ref["name"], ref["unqualified"], class_name
+                        )
+                        constants_table[cname] = {"value": {"__constant_ref__": ref_name}}
                 if tail["properties"] or tail["constants"] or doc_comment:
                     print(f"    tail: {len(tail['properties'])} prop(s), "
                           f"{len(tail['constants'])} const(s)"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "ioncube-php8-decompiler" / "src"))
 
-from engines.ioncube.dumper import _consume_class_tail
+from engines.ioncube.dumper import _constant_ref_name, _consume_class_tail
 from php_reconstructor.decompiler.optimize import optimize
 from php_reconstructor.decompiler.program import decompile_program
 from php_reconstructor.emitter.php_emitter import emit_php
@@ -194,6 +194,63 @@ def test_php84_constants_keep_values_including_explicit_null():
     flag, nothing = tail["constants"]
     assert (flag["name"], flag["has_value"], flag["value"]) == ("FLAG", True, 1)
     assert (nothing["name"], nothing["has_value"], nothing["value"]) == ("NOTHING", True, None)
+
+
+def test_php84_constant_expression_ast_is_decoded():
+    payload = b"\x81@:65:2048:14;s26'RSThemes\\View\\RSTHEMES_DIR"
+    buf = b"".join(
+        [
+            _value_table([]),
+            _value_table([]),
+            _u32(0), _u32(0),
+            _u32(0),                     # no properties
+            _u32(1),                     # one constant
+            _constant_84("MODULE_ADDON", payload),
+        ]
+    ) + _tail_after_constants()
+
+    tail = _consume_class_tail(buf, 0, php_version=84)
+
+    assert tail["next_offset"] == len(buf)
+    constant = tail["constants"][0]
+    assert constant["has_value"] is False
+    assert constant["constant_ref"] == {
+        "name": "RSThemes\\View\\RSTHEMES_DIR",
+        "unqualified": True,
+    }
+
+
+def test_constant_ref_name_keeps_namespace_semantics():
+    assert _constant_ref_name(
+        "RSThemes\\View\\RSTHEMES_DIR", True, "RSThemes\\View\\ViewHelper"
+    ) == "RSTHEMES_DIR"
+    assert _constant_ref_name("RSTHEMES_DIR", True, "ViewHelper") == "RSTHEMES_DIR"
+    assert _constant_ref_name("Foo\\BAR", True, "A\\B") == "\\Foo\\BAR"
+    assert _constant_ref_name("Foo\\BAR", False, "A\\B") == "\\Foo\\BAR"
+
+
+def test_php84_constant_expression_reaches_the_emitted_class():
+    dump = {
+        "format": "icdump-ir-v1",
+        "source_file": "tail.php",
+        "entry": "main",
+        "op_arrays": {},
+        "class_index": {
+            "class:x": {
+                "id": "class:x",
+                "name": "RSThemes\\View\\ViewHelper",
+                "constants_table": {
+                    "MODULE_ADDON": {"value": {"__constant_ref__": "RSTHEMES_DIR"}},
+                    "OTHER": {"value": {"__constant_ref__": "\\App\\OTHER"}},
+                },
+            }
+        },
+    }
+
+    code = emit_php(optimize(decompile_program(parse_dump(dump))))
+
+    assert "const MODULE_ADDON = RSTHEMES_DIR;" in code
+    assert "const OTHER = \\App\\OTHER;" in code
 
 
 def test_php84_properties_reach_the_emitted_class():
