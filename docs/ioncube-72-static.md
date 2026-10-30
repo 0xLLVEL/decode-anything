@@ -233,3 +233,31 @@ CRC-32 over any prefix, which is what makes the "encoded metadata" reading solid
 Hook `0x62E80` (the real compile body) and `0x6D970` from the compile-hook wrapper, log their call
 tree during `include`, and stop on the first routine that reads the record marker. That gives the
 parse function directly instead of inferring it from cipher geometry.
+
+## M2.2 — record layer: negative results and the guard tool
+
+Two more attacks on the 608-byte record payload, both negative, and one new instrument.
+
+**Seed sweep.** For every combination of the header key material (`bytecode_xor_key`, `owner_key`,
+`member_id`, both outer key words, the body and secondary seeds, and their pairwise XORs) the payload
+was XORed with a 16-byte table (`rol3` of the first or last 16 bytes, or zeros) and either an
+`MT4IC` or `PRNG6` stream. 735 combinations, checksum checked at every start offset 0..16: **0 hits**.
+A separate `cipher0` sweep over 254 header-derived keys (slices of the decrypted header at 11 lengths
+x 10 offsets, body slices, blob slices, plus MD5 of each) also produced **0 hits**.
+
+**Hook probes.** The documented compile-hook RVA `0x62F30` does hit under
+[ic72_cipher_trace.py](../tools/ic72_cipher_trace.py), but the same breakpoint armed from the DLL-load
+event in the newer tool never fires, and neither does `0x62E80` (the compile body the hook calls)
+nor `0x6D970`. The byte is still `0xCC` at exit, so the code path is not taken in that run - the
+hook that the older tool reached must be installed later in startup than the load event.
+
+**New tool.** [ic72_record_guard.py](../tools/ic72_record_guard.py) arms `PAGE_GUARD` on the body
+region and walks the guard forward with the region's committed frontier, so the fault lands while
+the body is still inflating; once the record signature is complete it arms `Dr0..Dr3` on it. It
+also keeps `int3` bytes re-armed (the loader unpacks over early patches) and accepts arbitrary
+`--bp` RVAs. Two limits found: the loader's own guard pages collide with ours when a foreign
+fault is passed through, and guarding perturbs the target, so the worker is opt-in (`--guard`).
+
+Status: the body layer stays closed and verified; the record layer still has no confirmed transform.
+The next probe should arm the compile hook from the export pointer (the way the older tool does),
+then set a breakpoint on the first `call` inside it and read the `zend_file_handle` in `ecx`.
