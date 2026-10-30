@@ -39,7 +39,7 @@ def _value_table(values):
     return _u32(len(values)) + b"".join(_buffer(value) for value in values)
 
 
-def _property_84(name, default_index, flags, doc=None):
+def _property_84(name, default_index, flags, doc=None, type_bytes=b"\0\0\0\0"):
     return b"".join(
         [
             _buffer(name.encode("ascii")),
@@ -47,28 +47,39 @@ def _property_84(name, default_index, flags, doc=None):
             _u32(flags),
             _sstring(doc.encode("utf-8") if doc else None),
             _u32(0x80000000),  # no attributes
-            _u32(0),           # no type
+            type_bytes,
             _u32(0),           # no property hooks
         ]
     )
 
 
-def _property_83(name, flags, doc=None):
+def _property_83(name, flags, doc=None, type_bytes=b"\0\0\0\0"):
     return b"".join(
         [
             _buffer(name.encode("ascii")),
             _u32(flags),
             _sstring(doc.encode("utf-8") if doc else None),
             _u32(0x80000000),
-            _u32(0),
+            type_bytes,
         ]
     )
 
 
-def _tail_epilogue():
+def _constant_84(name, payload, type_bytes=b"\0\0\0\0"):
     return b"".join(
         [
-            _u32(0),           # class constants
+            _sstring(name.encode("ascii")),
+            _buffer(payload),
+            _sstring(None),              # constant doc-comment
+            _u32(0x80000000),            # no attributes
+            type_bytes,
+        ]
+    )
+
+
+def _tail_after_constants():
+    return b"".join(
+        [
             _u32(0), _u32(0), _u32(0),  # trait names / aliases / insteadof
             _u32(0x80000000),  # class attributes
             _u32(0),           # info buffer absent
@@ -76,6 +87,10 @@ def _tail_epilogue():
             _u32(0x80000000),  # class doc-comment
         ]
     )
+
+
+def _tail_epilogue():
+    return _u32(0) + _tail_after_constants()  # no class constants
 
 
 def test_php84_property_table_uses_default_index_and_hook_count():
@@ -125,6 +140,62 @@ def test_php83_property_table_keeps_declaration_order_defaults():
     assert answer["default"] is True
 
 
+def test_php84_property_types_keep_nullable_and_union_members():
+    nullable_int = _u32((1 << 4) | (1 << 1))           # ?int
+    int_or_string = _u32((1 << 4) | (1 << 6))          # int|string
+    nullable_foo = _u32(0x01000000 | (1 << 1)) + _sstring(b"Foo")
+    foo_or_bar = b"".join(
+        [
+            _u32(0x00400000),
+            _u32(2),
+            _u32(0x01000000) + _sstring(b"Foo"),
+            _u32(0x01000000) + _sstring(b"Bar"),
+        ]
+    )
+    buf = b"".join(
+        [
+            _value_table([]),
+            _value_table([]),
+            _u32(0), _u32(0),
+            _u32(4),
+            _property_84("count", 0, 0x04, type_bytes=nullable_int),
+            _property_84("label", 0, 0x01, type_bytes=int_or_string),
+            _property_84("foo", 0, 0x01, type_bytes=nullable_foo),
+            _property_84("pair", 0, 0x01, type_bytes=foo_or_bar),
+        ]
+    ) + _tail_epilogue()
+
+    tail = _consume_class_tail(buf, 0, php_version=84)
+
+    assert tail["next_offset"] == len(buf)
+    count, label, foo, pair = tail["properties"]
+    assert (count["type_name"], count["allow_null"]) == ("int", True)
+    assert (label["type_name"], label["allow_null"]) == ("int|string", False)
+    assert (foo["type_name"], foo["allow_null"]) == ("Foo", True)
+    assert (pair["type_name"], pair["allow_null"]) == ("Foo|Bar", False)
+
+
+def test_php84_constants_keep_values_including_explicit_null():
+    buf = b"".join(
+        [
+            _value_table([]),
+            _value_table([]),
+            _u32(0), _u32(0),
+            _u32(0),                     # no properties
+            _u32(2),                     # two constants
+            _constant_84("FLAG", b"\x81i1;4;1;"),
+            _constant_84("NOTHING", b"\x81n0;0;"),
+        ]
+    ) + _tail_after_constants()
+
+    tail = _consume_class_tail(buf, 0, php_version=84)
+
+    assert tail["next_offset"] == len(buf)
+    flag, nothing = tail["constants"]
+    assert (flag["name"], flag["has_value"], flag["value"]) == ("FLAG", True, 1)
+    assert (nothing["name"], nothing["has_value"], nothing["value"]) == ("NOTHING", True, None)
+
+
 def test_php84_properties_reach_the_emitted_class():
     dump = {
         "format": "icdump-ir-v1",
@@ -139,15 +210,30 @@ def test_php84_properties_reach_the_emitted_class():
                     "count": {
                         "flags_decoded": {"visibility": "private", "is_static": False},
                         "is_static": False,
+                        "type_name": "int",
+                        "allow_null": True,
                         "has_default_value": True,
                         "default_value": {"type": "int", "value": 7},
                     },
                     "answer": {
                         "flags_decoded": {"visibility": "public", "is_static": True},
                         "is_static": True,
+                        "type_name": "bool",
+                        "allow_null": False,
                         "has_default_value": True,
                         "default_value": {"type": "bool", "value": True},
                     },
+                    "label": {
+                        "flags_decoded": {"visibility": "protected", "is_static": False},
+                        "is_static": False,
+                        "type_name": "int|string",
+                        "allow_null": False,
+                        "has_default_value": False,
+                    },
+                },
+                "constants_table": {
+                    "FLAG": {"value": {"type": "int", "value": 1}},
+                    "NAME": {"value": {"type": "string", "value": "x"}},
                 },
             }
         },
@@ -155,5 +241,8 @@ def test_php84_properties_reach_the_emitted_class():
 
     code = emit_php(optimize(decompile_program(parse_dump(dump))))
 
-    assert "private $count = 7;" in code
-    assert "public static $answer = true;" in code
+    assert "const FLAG = 1;" in code
+    assert "const NAME = 'x';" in code
+    assert "private ?int $count = 7;" in code
+    assert "public static bool $answer = true;" in code
+    assert "protected int|string $label;" in code

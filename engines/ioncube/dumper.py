@@ -22,6 +22,7 @@ from pathlib import Path
 
 from .header import decode_file, decode_payload_body, read_encoded_payload
 from .adapter import (
+    _zend_type_name,
     build_op_array_entry,
     resolve_function_calls,
     safe_value,
@@ -1166,12 +1167,15 @@ def _read_buffer_at(buf: bytes, off: int) -> int:
     return off
 
 
-def _decode_property_default(payload: bytes | None) -> "tuple[bool, object]":
+def _decode_property_default(
+    payload: bytes | None, *, keep_null: bool = False
+) -> "tuple[bool, object]":
     """Decode an ionCube default-value buffer (an IC_ENCODED_ZVAL).
 
     The payload is the compact zval text optionally prefixed by a high-bit
     format marker byte (e.g. ``0x81``). Returns ``(has_default, value)``;
     ``has_default`` is False when the value is absent or an implicit null.
+    ``keep_null`` is for class constants, where an explicit null is a value.
     """
     if not payload:
         return False, None
@@ -1186,7 +1190,7 @@ def _decode_property_default(payload: bytes | None) -> "tuple[bool, object]":
         return False, None
     # An implicit null default (untyped property with no initializer) is not
     # worth rendering as ``= null`` — keep the bare declaration instead.
-    if value is None:
+    if value is None and not keep_null:
         return False, None
     return True, value
 
@@ -1212,20 +1216,52 @@ def _read_attributes(buf: bytes, off: int) -> int:
     return off
 
 
-def _read_type(buf: bytes, off: int) -> int:
+def _read_type_info(buf: bytes, off: int) -> "tuple[dict, int]":
     """sub_1009FE30 (zend_type): u32 mask; bit 0x01000000 → one name string;
-    bit 0x00400000 → u32 n + n nested types; otherwise nothing more."""
+    bit 0x00400000 → u32 n + n nested types; otherwise the low bits are
+    ``MAY_BE_*`` flags for builtin types."""
     mask = struct.unpack_from("<I", buf, off)[0]
     off += 4
+    allow_null = bool(mask & (1 << 1))
+
     if mask & 0x01000000:
-        _, off = _read_serialized_string_at(buf, off)
-    elif mask & 0x00400000:
+        raw, off = _read_serialized_string_at(buf, off)
+        name = raw.decode("utf-8", "replace") if raw else None
+        return {
+            "type_name": name,
+            "allow_null": allow_null,
+            "type_code": mask,
+        }, off
+
+    if mask & 0x00400000:
         n = struct.unpack_from("<I", buf, off)[0]
         off += 4
         if n > 0x10000:
             raise ParseError("implausible type-list count")
+        names: list[str] = []
         for _ in range(n):
-            off = _read_type(buf, off)
+            member, off = _read_type_info(buf, off)
+            allow_null = allow_null or bool(member.get("allow_null"))
+            name = member.get("type_name")
+            if name:
+                names.append(name)
+        return {
+            "type_name": "|".join(dict.fromkeys(names)) or None,
+            "allow_null": allow_null,
+            "type_code": mask,
+        }, off
+
+    name, type_null = _zend_type_name(mask)
+    return {
+        "type_name": name,
+        "allow_null": allow_null or type_null,
+        "type_code": mask,
+    }, off
+
+
+def _read_type(buf: bytes, off: int) -> int:
+    """Skip one serialized zend_type and return the next offset."""
+    _, off = _read_type_info(buf, off)
     return off
 
 
@@ -1317,7 +1353,7 @@ def _consume_class_tail(buf: bytes, off: int, *, php_version: int) -> dict:
         off += 4
         doc_raw, off = _read_serialized_string_at(buf, off)  # property doc-comment
         off = _read_attributes(buf, off)
-        off = _read_type(buf, off)
+        type_info, off = _read_type_info(buf, off)
         if php_version >= 84:
             hook_count = struct.unpack_from("<I", buf, off)[0]
             off += 4
@@ -1346,25 +1382,32 @@ def _consume_class_tail(buf: bytes, off: int, *, php_version: int) -> dict:
             "is_static": is_static,
             "has_default": has_default,
             "default": default_value,
+            "type_name": type_info["type_name"],
+            "allow_null": type_info["allow_null"],
             "doc_comment": doc_raw.decode("utf-8", "replace") if doc_raw else None,
         })
 
     # class constants: u32 count + count×(sstring name, value buffer, sstring,
     # attributes, [type on PHP 8.3])
-    constants: list[str] = []
+    constants: list[dict] = []
     const_count = struct.unpack_from("<I", buf, off)[0]
     off += 4
     if const_count > 0x2710:
         raise ParseError("implausible constant count")
     for _ in range(const_count):
         cname, off = _read_serialized_string_at(buf, off)
-        off = _read_buffer_at(buf, off)
+        payload, off = _read_buffer_value_at(buf, off)
         _, off = _read_serialized_string_at(buf, off)
         off = _read_attributes(buf, off)
         if php_version >= 83:
             off = _read_type(buf, off)
         if cname is not None:
-            constants.append(cname.decode("latin1", "replace"))
+            has_value, value = _decode_property_default(payload, keep_null=True)
+            constants.append({
+                "name": cname.decode("latin1", "replace"),
+                "has_value": has_value,
+                "value": value,
+            })
 
     off = _read_trait_uses(buf, off)
     off = _read_attributes(buf, off)    # class-level attributes
@@ -1898,6 +1941,7 @@ def dump_file_to_ir(
             # count so the next class record begins where this one ends.
             doc_comment = None
             properties_info: dict = {}
+            constants_table: dict = {}
             try:
                 tail = _consume_class_tail(body, scan, php_version=target_php_version)
                 scan = tail["next_offset"]
@@ -1914,11 +1958,18 @@ def dump_file_to_ir(
                         "is_static": p["is_static"],
                         "has_default_value": p.get("has_default", False),
                     }
+                    if p.get("type_name"):
+                        entry["type_name"] = p["type_name"]
+                        entry["allow_null"] = bool(p.get("allow_null"))
                     if p.get("has_default"):
                         entry["default_value"] = safe_value(p["default"])
                     if p.get("doc_comment"):
                         entry["doc_comment"] = p["doc_comment"]
                     properties_info[pname] = entry
+                for c in tail["constants"]:
+                    cname = c["name"]
+                    if cname and c["has_value"]:
+                        constants_table[cname] = {"value": safe_value(c["value"])}
                 if tail["properties"] or tail["constants"] or doc_comment:
                     print(f"    tail: {len(tail['properties'])} prop(s), "
                           f"{len(tail['constants'])} const(s)"
@@ -1952,6 +2003,7 @@ def dump_file_to_ir(
                 "ce_flags_decoded": ce_flags_decoded,
                 "doc_comment": doc_comment,
                 "properties_info": properties_info,
+                "constants_table": constants_table,
             }
 
         if class_method_count:
