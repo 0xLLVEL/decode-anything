@@ -1288,10 +1288,17 @@ def _consume_class_tail(buf: bytes, off: int, *, php_version: int) -> dict:
     off, default_props   = _read_value_table(buf, off)   # instance defaults
     off, default_statics = _read_value_table(buf, off)    # static defaults
 
+    # PHP 8.4 inserts two class-level counts between the default-value tables and
+    # the property table. Both are zero in the reference corpus; consuming them
+    # keeps the property table aligned.
+    if php_version >= 84:
+        off += 8
+
     # properties (sub_100A03C0): u32 count + count×(buffer name, u32 flags,
     # sstring, attributes, type). Default values live in the two tables above —
     # instance properties draw from the first, static ones from the second, each
-    # in declaration order.
+    # in declaration order. PHP 8.4 stores an explicit default index before the
+    # flags and appends a property-hook count after the type.
     properties: list[dict] = []
     prop_count = struct.unpack_from("<I", buf, off)[0]
     off += 4
@@ -1302,17 +1309,31 @@ def _consume_class_tail(buf: bytes, off: int, *, php_version: int) -> dict:
         name_off = off + 4
         name_raw = struct.unpack_from("<I", buf, off)[0]
         off = _read_buffer_at(buf, off)
+        value_idx = None
+        if php_version >= 84:
+            value_idx = struct.unpack_from("<I", buf, off)[0]
+            off += 4
         flags = struct.unpack_from("<I", buf, off)[0]
         off += 4
         doc_raw, off = _read_serialized_string_at(buf, off)  # property doc-comment
         off = _read_attributes(buf, off)
         off = _read_type(buf, off)
+        if php_version >= 84:
+            hook_count = struct.unpack_from("<I", buf, off)[0]
+            off += 4
+            if hook_count:
+                raise ParseError(
+                    f"property hooks not supported (count={hook_count})"
+                )
         nm = None
         if not (name_raw & 0x80000000):
             nlen = name_raw & 0x9FFFFFFF
             nm = _decode_class_name(buf[name_off:name_off + nlen], None)
         is_static = bool(flags & 0x10)
-        if is_static:
+        if value_idx is not None:
+            table = default_statics if is_static else default_props
+            payload = table[value_idx] if value_idx < len(table) else None
+        elif is_static:
             payload = default_statics[static_idx] if static_idx < len(default_statics) else None
             static_idx += 1
         else:
@@ -1878,7 +1899,7 @@ def dump_file_to_ir(
             doc_comment = None
             properties_info: dict = {}
             try:
-                tail = _consume_class_tail(body, scan, php_version=php_version)
+                tail = _consume_class_tail(body, scan, php_version=target_php_version)
                 scan = tail["next_offset"]
                 doc_comment = tail["doc_comment"]
                 for p in tail["properties"]:
