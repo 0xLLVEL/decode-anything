@@ -362,7 +362,7 @@ def _op_array_entry(
     kind: str,
     fallback_name: str,
 ) -> tuple[str, dict[str, Any]]:
-    name = op_array.get("function_name")
+    name = _plain(op_array.get("function_name"))
     if not isinstance(name, str) or not name:
         name = fallback_name
     fn_flags = op_array.get("fn_flags") or 0
@@ -474,6 +474,14 @@ def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
         if isinstance(raw, dict) and isinstance(raw.get("opcodes"), list):
             _repair_jump_targets(raw["opcodes"])
 
+    # op_array ids for methods are ``class:...:method:...``; they belong to their
+    # class and must not also be emitted as top-level functions.
+    method_owners: dict[str, str] = {}
+    for class_id, raw in (runtime_ir.get("class_index") or {}).items():
+        for oa_id in (raw.get("methods") or {}).values():
+            if isinstance(oa_id, str):
+                method_owners[oa_id] = str(class_id)
+
     for op_id, raw in (runtime_ir.get("op_arrays") or {}).items():
         if not isinstance(raw, dict):
             continue
@@ -487,9 +495,15 @@ def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
             fallback = bytes.fromhex(fallback).decode("utf-8")
         except ValueError:
             pass
+        owner = method_owners.get(op_id)
         _, entry = _op_array_entry(
-            raw, source_file=source_file, kind="function", fallback_name=fallback
+            raw,
+            source_file=source_file,
+            kind="method" if owner else "function",
+            fallback_name=fallback,
         )
+        if owner:
+            entry["meta"]["class"] = owner
         op_arrays[op_id] = entry
 
     for name_hex, op_id in (runtime_ir.get("function_index") or {}).items():

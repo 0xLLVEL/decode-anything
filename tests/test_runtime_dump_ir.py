@@ -239,3 +239,47 @@ def test_foreach_latch_targets_the_fetch_opline():
     assert _repair_jump_targets(ops) == 1
     assert ops[3]["jump_targets"] == [1]
     assert ops[3]["op1"]["num"] == 1
+
+
+def test_class_methods_become_methods_not_top_level_functions():
+    ir = {
+        "op_arrays": {
+            "main": dict(SAMPLE_IR["op_arrays"]["main"]),
+            "class:4d6f64:method:72756e": {
+                "id": "class:4d6f64:method:72756e",
+                "kind": "function",
+                "function_name": _safe("run"),
+                "fn_flags": 0x100,
+                "line_start": 1,
+                "line_end": 3,
+                "last_var": 0,
+                "T": 0,
+                "vars": [],
+                "arg_info": [],
+                "literals": [],
+                "opcodes": [_op(0, "ZEND_RETURN")],
+            },
+        },
+        "function_index": {},
+        "class_index": {
+            "class:4d6f64": {
+                "name": _safe("Demo"),
+                "parent": {"type": "null", "value": None},
+                "interfaces": [],
+                "ce_flags_decoded": {},
+                "methods": {"Run": "class:4d6f64:method:72756e"},
+                "properties_info": [],
+                "constants_table": [],
+            }
+        },
+    }
+
+    icdump = to_icdump(ir, "demo.php")
+    method = icdump["op_arrays"]["class:4d6f64:method:72756e"]
+
+    assert method["kind"] == "method"
+    assert method["meta"]["class"] == "class:4d6f64"
+    assert method["function_name"]["value"] == "run"
+    assert icdump["class_index"]["class:4d6f64"]["methods"] == {
+        "Run": "class:4d6f64:method:72756e"
+    }
