@@ -1762,3 +1762,61 @@ The stored byte for the first receive opcode of each record:
 Those seven stored bytes must all decode to the same opcode, which pins seven key
 bytes at once. Under the cipher hypothesis the key sequence is keystream output,
 so the seven keys can be checked against the generator instead of searched.
+
+## M3.16 One field decides both the build and the mask
+
+`sub_18009FA20` is called from `sub_18009FC70` line 96 with the same context that
+`sub_18009F1B0` receives. Its first instruction reads that context's flag word:
+
+```
+mov  r13d, dword ptr [rcx + 4]
+test r13d, 0x2c80
+jne  0x18009fa5a                  ; build the base array
+mov  dword ptr [rdx + 0x20], -1
+mov  dword ptr [rdx + 0x14], -1
+ret
+```
+
+`0x2c80` is bits 7, 10, 11 and 13. Bit 7 is exactly the sign bit of the low byte
+that `sub_18009E8B0` tests with `test r9b, r9b; jns`. So the build and the mask are
+driven by one flag, and they switch on together. A record with the mask off has
+no base array at all, and its stored opcode bytes are already final.
+
+### The base array
+
+Inside the branch: `malloc(4 * (ops + 1))`, then `ops + 1` u32 values from
+`sub_18009CA60(readers[context + 40])`, stored at `op_array + 64`. `CA60` reads
+four bytes through the reader's function pointer at `+24` and hands them to
+`sub_18009C9E0`, which XORs keystream material in when `reader + 48` is set.
+
+`context + 40` is a cursor into an array of 24 byte entries, advanced by 24 bytes
+in `sub_18009E880` when `context + 4` has `0x40000000`. It is not a byte stream.
+
+`sub_18009E8B0` indexes the base **as bytes**, one per opcode index, so only the
+first `ops` bytes of the built array are ever read - one quarter of what is
+allocated. Whatever the reader produces, the mask consumes it as a flat byte
+string.
+
+### What the base is not
+
+Three negative results, each cheap to re-run:
+
+- not plaintext in the payload: the four receive bytes of `api` pin the
+  keyset delta `0x97, 0x0B, 0xC4` regardless of the opcode, and no four
+  consecutive bytes anywhere in the 25712 byte body carry that delta
+- not keystream: 600k bytes from the `api` record key at shifts 0, 8, 16 and 24
+  hold no such window
+- not the header's other material: the same scan over all twenty ordered pairs of
+  `owner_key`, `member_id`, `bytecode_xor_key`, seed, format and the two
+  `config` record keys, four shifts each, holds no such window either
+
+So the base bytes are ciphertext that lives outside the record payload, or
+material produced by a generator seeded from something not yet identified.
+
+### Operand nodes are ordinals, not literals
+
+The receive opcodes read `op1 = IS_CV(i)` in argument order and `op2 = IS_UNUSED`
+with a node of `i + 1`. `IS_CONST` operands do index the literal table, one based:
+`config` op2 reads `CONST(1)` and resolves to `"configarray"`, `link` op2 reads
+`CONST(3)` and resolves to `"lng_languag"`. `tools/ic72_op_walk.py` now resolves
+`IS_CONST` nodes inline and leaves the rest as raw ordinals.

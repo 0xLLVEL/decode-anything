@@ -48,6 +48,13 @@ def decode_class(class_byte, class_word):
     return 0
 
 
+def literal_text(literals, node):
+    """Operand nodes are one based into the literal table."""
+    if not literals or node < 1 or node > len(literals):
+        return None
+    return literals[node - 1].text
+
+
 def walk_record(payload: bytes, arg_count: int):
     head = 0x88 + 20 * arg_count
     ops, cells = struct.unpack_from("<2I", payload, head)
@@ -105,15 +112,21 @@ def walk_record(payload: bytes, arg_count: int):
     }
 
 
-def format_entry(entry):
-    ops = " ".join("%s=%s(%d)" % (slot, kind, node) for slot, kind, node in entry["operands"])
+def format_entry(entry, literals=None):
+    parts = []
+    for slot, kind, node in entry["operands"]:
+        text = literal_text(literals, node) if kind == "CONST" else None
+        if text is not None:
+            parts.append("%s=CONST(%d)=\"%s\"" % (slot, node, text))
+        else:
+            parts.append("%s=%s(%d)" % (slot, kind, node))
     extra = "" if entry["class_word"] is None else "  class_word=%#010x" % entry["class_word"]
     return "  op%-3d code=%#04x class=%-10s line=%-4d %s%s" % (
         entry["index"],
         entry["opcode"],
         entry["class"],
         entry["line"],
-        ops,
+        " ".join(parts),
         extra,
     )
 
@@ -145,7 +158,7 @@ def main(argv):
             )
         )
         for entry in result["entries"][:limit]:
-            print(format_entry(entry))
+            print(format_entry(entry, record.literals))
         if limit and len(result["entries"]) > limit:
             print("  ... %d more" % (len(result["entries"]) - limit))
 
