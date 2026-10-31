@@ -1588,3 +1588,67 @@ opcode count. M3.12's claim that it was the best candidate is withdrawn.
 
 `tools/ic72_record_layout.py` now prints the full partition and resolves every
 literal against the pool.
+
+## M3.14 The aux array is three operand descriptors per opcode
+
+`sub_18009E910` is the consumer, and it settles the shape. It is called once per
+opcode and reads up to three five-byte entries, each shaped
+
+```
+u8   operand type    1 IS_CONST, 2 IS_TMP_VAR, 4 IS_VAR, 8 IS_UNUSED, 16 IS_CV
+u32  node index
+```
+
+gated by the opcode's flags:
+
+| gate | slot | loader field |
+|---|---|---|
+| `0x100` | operand 1 | type `+31`, node `+16` |
+| `0x200` | operand 2 | type `+29`, node `+8` |
+| `0x400` | result | type `+30`, node `+12` |
+
+When a gate is clear the type is written as `8` (`IS_UNUSED`) and no bytes are
+consumed. In this sample all three gates are set on every opcode, so the array is
+consumed at exactly fifteen bytes per opcode, which is why the count is `3 * ops`
+and the literal table behind it lines up.
+
+The type alphabet came out of the data, not out of the disassembly: every type
+byte in all four records is one of `1, 2, 4, 8, 16`, and nothing else.
+
+### Reading one opcode
+
+`binancepay_config`, three opcodes:
+
+| op | value | line | operand 1 | operand 2 | result |
+|---|---|---|---|---|---|
+| 0 | `0x71` | 8 | `IS_UNUSED` 0 | `IS_CV` 0 | `IS_CONST` 0 |
+| 1 | `0xF0` | 33 | `IS_UNUSED` 0 | `IS_CV` 0 | `IS_UNUSED` 0 |
+
+The value byte is still masked, so the opcode names are not final, but the
+operands are decoded.
+
+### The mask path
+
+`sub_18009F1B0` passes `*(int *)(op_array + 4)` to `sub_18009E8B0` as the flag
+that decides whether to mask. Positive means the opcode byte is used raw;
+negative means it is XORed with `op_array[64][op_index]`. `sub_18009E8B0` also
+zeroes that byte and returns the raw value when the decoded opcode is `0x95` and
+the version field is at least 3.
+
+`op_array + 64` is written in two places:
+
+- `sub_18009E240` stores a header field there
+- `sub_18009FA20` stores a freshly built array of `ops + 1` `u32` read through
+  `sub_18009CA60`, but only when `payload[0x04] & 0x2C80` is set
+
+In this sample `payload[0x04]` is `0x08000000`, so `0x08000000 & 0x2C80` is zero
+and the built array never happens. Whatever mask is in play here comes from the
+header field, not from the stream.
+
+### One open point
+
+Grouping the word array by the class/line escape rule yields `ops - 1` groups in
+every record, and the fixed `0xFFFFFFFF` word that closes the array is itself the
+last opcode slot. So either the escape rule needs the sentinel carved out, or the
+last opcode has no operands and carries the terminator. Both readings are
+consistent with the byte counts; nothing yet separates them.
