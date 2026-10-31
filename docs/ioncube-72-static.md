@@ -2038,3 +2038,51 @@ wrote in the clear and nothing the loader regenerates in memory.
 Static is not dead - for a sample whose keys are file local the segment is
 derivable, and with it the mask. Those samples decode fully offline. This one
 does not, and no amount of further reversing changes that without the key.
+
+## M4.3 Why PHP 8 decodes statically and 7.2 does not
+
+Not a version difference in difficulty. A difference in where the seed is stored.
+
+PHP 8.x (`build_php81_opcode_xor_stream`, serialization v15):
+
+```
+key_bytes[i] = (PRNG6(seed_a, seed_b).next() ^ request_key) lane byte
+opcode       = key_bytes[i] ^ raw_opcode
+seed_a, seed_b = outer.outer_key_words[0], [1]
+```
+
+`outer_key_words` are words the dynamic main record carries in the artifact, and
+`request_key` is read from the file too. Every input to the mask is file data, so
+the mask is derivable and the opcode isn't needed from outside. That is the whole
+reason the 8.x decompiler is static.
+
+PHP 7.2 (`sub_18009D0D0`):
+
+```
+a2[2] = LCG seed          set by sub_18009CFF0 at load
+a2[3] = xorshift state    set by sub_18009D060 at load
+array[i] = (69069*a2[2]+123) + xorshift(a2[3])
+```
+
+The structure is the same idea - a two-stream PRNG whose sum lane becomes the
+mask. What differs is the plumbing: the 7.2 seeds are written at load time from
+the license segment, not read from the record key words.
+
+Measured against real mask bytes recovered from the runtime, with the 8.x style
+constant XOR per dword applied and 64 stream offsets and both key orders tried:
+
+| record | constant-key dword match |
+|---|---|
+| config | none |
+| link | none |
+| proxy | none |
+| api | none |
+
+So the 7.2 record keys are not the mask seed, and no amount of translating the
+8.x routine across will make them the seed.
+
+Same encoder family, though: 7.2 has the `0x95` no-key escape in `sub_18009E8B0`
+and 8.x v6+ has the `0x95` sentinel in `_b3c0_opcode_sentinel`. Identical
+sentinel, different seed source.
+
+Short version: 8.x ships the key in the file. 7.2 ships it in the licence.
