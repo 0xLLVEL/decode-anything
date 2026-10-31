@@ -1070,3 +1070,79 @@ suggests the straight-line candidate: one call that reads `32 * opcode_count`
 bytes through the `ctx+168` callback and then walks the result. Everything else
 in the record — header, arguments, literals, flags — is now accounted for, so
 that read is the only unexplained consumer of the segment.
+
+## M3.8 Line map and the instruction word grammar
+
+Two corrections and one measurement.
+
+### +0x50 / +0x54 is the line range, not a stream offset
+
+`+0x50` and `+0x54` hold the first and last source line the function occupies:
+
+| record | lines | opcodes | literals |
+|---|---|---|---|
+| `binancepay_config` | 5..34 | 1 | 1 |
+| `binancepay_link` | 36..181 | 128 | 17 |
+| `call_bp_proxy` | 184..206 | 22 | 4 |
+| `bp_call_api` | 209..255 | 54 | 14 |
+
+The ranges do not overlap, they ascend in record order, and together they tile
+lines 5..255 of the original file. The file-level record (`#0`, 616 bytes, empty
+name) is the only one without a range, which fits: it is the pseudo-function that
+holds the file-scope statements and its segment is the encrypted one.
+
+Earlier work read `+0x50` as an offset into the payload and started decoding at
+`0xb8` for `call_bp_proxy` because `0xb8` happened to be the value stored there.
+That was a coincidence of the value also being a valid line number — the
+instruction stream starts at `+0x90` for every record.
+
+### Instruction stream
+
+`+0x74` is a fixed seven-word name record: `1, 6, 2, name_len, 0, a, b` — the
+`1, 6` pair is a zend_string image (`refcount 1`, `IS_STRING`), the same pair the
+literal reader copies out of the stream (M3.7). It is the only `(1,6)` pair in
+the payload, so the function name is stored once and referenced by index.
+
+The stream begins immediately after it at `+0x90` and runs to the first
+`0xffffffff` word:
+
+| record | stream | bytes | words | tokens | immediates | words/op |
+|---|---|---|---|---|---|---|
+| `binancepay_config` | `0x090..0x09c` | 12 | 3 | 3 | 0 | 3.00 |
+| `binancepay_link` | `0x090..0x4c4` | 1076 | 269 | 234 | 35 | 2.10 |
+| `call_bp_proxy` | `0x090..0x1b8` | 296 | 74 | 49 | 25 | 3.36 |
+| `bp_call_api` | `0x090..0x2ec` | 604 | 151 | 111 | 40 | 2.80 |
+
+The instruction records are therefore variable length — between two and three
+and a bit words per opcode — so the earlier uniform 32-byte stride search over
+the payload could never have matched. That negative result is now explained
+rather than open.
+
+### Word grammar
+
+Most words are operand tokens:
+
+```
+[u8 value] [u8 class] [u16 line]
+```
+
+* `class` is one of exactly three values: `0x07`, `0x0f`, `0x1f` — the low *n*
+  bits set for n = 3, 4, 5. Nothing else occurs across 397 tokens in four
+  records, so this byte is a length or shape marker, not a free operand.
+* `line` is a full `u16` and always lands inside the range at `+0x50/+0x54`.
+  Every token's line is in range without exception, which is what pins the
+  interpretation down: with `call_bp_proxy` the fifty line values observed span
+  184..206 and the declared range is 184..206.
+
+Remaining words are raw immediates spliced between tokens: small integers
+(`2`, `8`, `0x10`, `0x28`) and, after `class 0x1f` tokens, the value `0x10` in
+fourteen of sixteen cases.
+
+### Open
+
+How an opcode boundary is derived from the token sequence. The class alphabet of
+three values and the immediate-after-`0x1f` rule are the handles: a `0x1f` token
+with a following immediate looks like an operand carrying a payload, and the
+`0x0f` tokens form a minority (12/234, 3/49, 9/111) that may mark the slot that
+closes a record. `tools/ic72_tokens.py` dumps the stream in order for testing
+that against the next candidate rule.
