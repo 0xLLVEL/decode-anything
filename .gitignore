@@ -58,3 +58,10 @@ AGENTS.md
 agents.md
 AGENTS*.md
 
+
+# IDA database sidecars (never the loader binaries themselves)
+*.id0
+*.id1
+*.id2
+*.nam
+*.til

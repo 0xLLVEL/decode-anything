@@ -426,3 +426,82 @@ still the encrypted sv5 record, same conclusion as the earlier cipher sweeps.
 
 The helper at `0x49C0` that fires first inside `0x6D970` is a basename/extension comparison, not a
 decoder; the `0x6F620` cluster is a `[...]`/`=`-aware pattern matcher used by the licence check.
+
+## M3 - the sv5 envelope decodes statically (PHP 7.2 sample)
+
+The earlier record-layer attempts read `blob[4..]` as if the payload were one
+contiguous stream. It is not: the envelope is a **framed** stream, and the frames
+have to be reassembled with the per-file PRNG before anything inflates. Once
+that is done the entire envelope opens: header, metadata, and the program blob.
+
+Sample: `binancepay_asli.php` (DHRU Fusion), PHP 7.2 loader.
+
+### Gates
+
+| gate | what is compared | result |
+|---|---|---|
+| transition | `adler-17(payload[4:transition])` vs transition dword | `0xE4FD6A41` = `0xE4FD6A41` |
+| header | `MD4(plaintext)` vs `ROL3(last 16 ciphertext bytes)` | `f7 6f 80 29 b8 38 88 61` = same |
+| frame #1 | adler-32 running value vs `0xA0` frame at `0x1FE6` | `0x0884C14B` = same |
+| frame #2 | adler-32 running value vs `0xA0` frame at `0x2502` | `0x9AFB4D7F` = same |
+| inflate | raw DEFLATE (windowBits -15) reaches BFINAL | eof, no unconsumed input |
+
+Values that fall out of a verified decode:
+
+```
+format id       0x4FF571B7        format version 5
+seed            0x967A1529        header 168 bytes, MD4 ok
+php version     72                php flags 0x00048487
+encoder         12.0.2            member id 0x00007B62
+bytecode key    0x00364730        owner key 0xE9FC23B1
+body seeds      0x05A3AEF6 / 0x8F03ED9E
+body            25712 bytes from 9052 framed bytes
+frames          75 encrypted chunks, 39 literals, 2 checksums, 0 control
+```
+
+### Frame grammar (`sub_1800A1090`)
+
+```
+flag < 0x80        encrypted chunk, `second` bytes, XOR low byte of PRNG
+flag & 0xE0 == 0x80  one literal byte = `second`
+flag & 0xE0 == 0xA0  checksum: 4 escape-decoded bytes starting AT `second`
+flag & 0xE0 == 0xC0  literal 0x3C
+flag & 0xE0 == 0xE0  no payload, the two header bytes are skipped
+```
+
+Two details cost hours and are worth stating plainly.
+
+The checksum field does **not** start after the two-byte frame header. The loader
+passes `frame + 1` to the escape decoder (`sub_1800A1050`), so the byte it read as
+`second` is the first checksum byte. Reading four literal bytes from `frame + 2`
+desynchronises the frame walk a few kilobytes in, which is exactly why earlier
+sweeps saw a valid-but-truncated DEFLATE stream.
+
+The running checksum is adler-32 seeded with **0**, not 1, and it covers the raw
+frame bytes - the two header bytes plus the still-encrypted payload - for encrypted
+chunks and just the two header bytes for the `0x80`/`0xC0` literals. `0xE0` control
+frames contribute nothing. With seeded-1 adler nothing matches; with seeded-0 both
+frames match to the byte.
+
+### PRNG
+
+`sub_18009D410` builds the generator type 5 used for both the header keystream and
+the body frames. Its ring is filled with `a + b` only, and the accumulator folds
+back through `-2 - value` on a slot array indexed `slots[i + 4]`, so regeneration
+can touch slots `-4..-1`. Constant-for-constant that is the same stream `MT4IC`
+already implements: seeded at `0x05A3AEF6` and at the odd seed `0x967A1529` the two
+implementations agree on every byte past two full regenerations (9000 and 4200
+bytes compared). No second generator is needed - the 7.2 factory differs in
+bookkeeping, not in output.
+
+### Reproduce
+
+```
+python tools/ic72_static_container.py sample.php --body-out body72.bin
+```
+
+The blob opens with a 616-byte block at `+0x54` and lands on the record area at
+`0x2BC`, where names appear length-prefixed (`0x11 binancepay_config`). 292
+identifier literals are visible in the first pass, so the remaining work is the
+sv5 record walker - `OpArrayMetadata`, opcode blocks, and the `0x00364730`
+bytecode XOR - not the envelope.
