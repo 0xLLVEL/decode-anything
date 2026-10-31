@@ -146,6 +146,9 @@ def main(argv: list[str]) -> int:
               f"at {record.payload_offset:#06x}")
         for line in describe(record, payload):
             print(line)
+        words = struct.unpack("<5I", record.descriptor)
+        print(f"   descriptor      literals={words[0]} opcodes={words[1]} "
+              f"pad={words[2]}/{words[3]} table={words[4]}")
         runs = [match.group().decode("latin-1") for match in PRINTABLE_RUN.finditer(payload)]
         for run in runs[:args.strings]:
             print(f"   str {run[:96]!r}")

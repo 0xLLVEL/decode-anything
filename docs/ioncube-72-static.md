@@ -890,3 +890,33 @@ python tools/ic72_payload72.py body72.bin --resync
 python tools/ic72_payload72.py body72.bin --resync --name call_bp_proxy --dump-instr 96
 python tools/ic72_payload72.py body72.bin --resync --index 4 --strings 20
 ```
+
+### The 20-byte descriptor feeds the op_array directly
+
+`sub_180002140(descriptor, op_array, persistent)` takes the descriptor as five
+dwords and stores them straight into the op_array:
+
+```
+descriptor[0]  -> op_array+72    literal count
+descriptor[1]  -> op_array+76    opcode count
+descriptor[4]  -> op_array+160 = 8 * descriptor[4]
+                -> op_array+168 = zeroed array of that size
+```
+
+So the descriptor is `[literals][opcodes][0][0][table]`, and the only non-obvious
+field is the last one, which sizes an 8-byte-per-entry table that the loader
+allocates and zeroes. Measured on the sample:
+
+```
+<file level>          literals=0  opcodes=2   table=1
+binancepay_config     literals=1  opcodes=1   table=0
+binancepay_link       literals=17 opcodes=128 table=25
+call_bp_proxy         literals=4  opcodes=22  table=17
+bp_call_api           literals=14 opcodes=54  table=25
+```
+
+The literal and opcode counts match the record's literal table and the data
+segment header `+2c`/`+30` on every record, which closes the loop: the record
+says how big the function is, the segment's header says the same thing, and
+the descriptor says it a third time. The `table` field does not correlate with
+either count, so it stays unnamed until the interpreter names it.
