@@ -703,18 +703,21 @@ literal text lives (record 2 keeps the whole DHRU config pool there).
 
 ```
 sub_180003730   u8 flag
-                u32 n1, n1 bytes                (empty in both records)
-                u32 n2, then n2 * (u32 len + len bytes)
-                u32, u32
+                u32 n1, then B830(n1) bytes
+                u32 n2, then n2 * (u32 len + B830(len) bytes)
+                u32 -> +64
+                u32 -> +68
 sub_18009FFC0   u16 name_len, name_len+1 bytes  (0 means no name)
 20 bytes        descriptor (sub_18009D610 = B830(20))
-u32             op_array +0x20
-u32             op_array +0x24
-u32             fn_flags (& ~8)
-sub_18009E500   per argument: u32 flag, then a string when flag != 0
-u32             literal count
+u32             -> +32, seeds the argument count
+u32             -> +36
+u32             fn_flags, then `&= ~8`
+sub_18009E500   argument table, count from sub_18000C8D0(op_array):
+                per argument u32 flag, string when set,
+                u32 flag, string when set, then 4 raw bytes
+u32             -> +72, the literal count
 sub_18009DFE0   per literal: string + 8-byte key
-u32             num_args
+u32             -> +24
 u8              construct flag
 u32             filename reference, 0xFFFFFFFF means none, else a string
 ```
@@ -723,38 +726,98 @@ u32             filename reference, 0xFFFFFFFF means none, else a string
 empty string, otherwise the length is `word & 0x9FFFFFFF` and the payload is
 `length + 1` bytes when bit 29 is clear.
 
+`sub_18000C8D0(op_array)` is the argument count: `op_array+32`, plus one when
+`fn_flags & 0x40000000`, plus one more when `fn_flags & 0x01000000`. Each
+argument is 11 bytes minimum - two flag words that may each carry a string,
+then four raw bytes for the type hint and default.
+
+Reading the argument count out of `fn_flags` instead of the stream is what
+unlocked records 3 to 5: the first two records have zero arguments, so the
+byte accounting looked identical either way.
+
 ### What the walker produces
 
 ```
-#0 0x004..0x2bc A=616  keys=0x4ec3cf8c/0x3481662b  blob@0x054
-   name='' fn_flags=0 literals=0 filename=None
-#1 0x2be..0x975 A=1575 keys=0x16022aed/0x0e258024  blob@0x34e
-   name='binancepay_config' fn_flags=0x8000000
-   literals=1 ('configarray', 0x0000000600000001)
-   filename='binancepay_config'
+#0 0x004..0x2bc  payload=616   keys=0x4ec3cf8c/0x3481662b  name=''
+#1 0x2be..0x975  payload=1575  keys=0x16022aed/0x0e258024  name='binancepay_config'
+#2 0x975..0x3977 payload=11778 keys=0x543db7bd/0x3fb79803  name='binancepay_link'
+#3 0x3977..0x496a payload=3855  keys=0x1b085114/0x19a1a159  name='call_bp_proxy'
+#4 0x496a..0x646e payload=6456  keys=0x4cabc358/0x5b37e0a7  name='bp_call_api'
 ```
 
-Two details this settles:
+The only gap is two bytes at `0x2BC` (`06 00`): the `u16` function count that
+`sub_1800A16E0` reads between the file-level op_array and the function loop.
+Every record after that is back to back, and the body ends at `0x646E` of
+`0x6470` bytes.
+
+Three details this settles:
 
 - The main data segment is at `0x54`, not `0x4C`. The `0xFFFFFFFF` and
   `0x268` pair at `0x4C` is the *filename reference* followed by the *blob
   length*, both plaintext. Every earlier attempt to decode "the 616 bytes at
   `0x4C`" started two fields early and chewed on a length word.
-- Record 2 carries `fn_flags = 0x08000000` and one literal named
-  `configarray`, whose 8-byte key reads back as `0x0000000600000001` - i.e.
-  the two small `u32`s we kept seeing between names are literal keys, not
-  obfuscation.
-
-### Where the walk stops
-
-The next record does not start at `0x975`; the two bytes at `0x2BC` (`06 00`)
-and the bytes at `0x975` belong to the group framing `sub_1800A16E0` drives,
-which interleaves op_array groups, class groups (`sub_1800A0920`, with
-`u16 method_count - sub_18009D850(...)`) and top-level counts. The walker
-covers the op_array case; reproducing the group order is the next step.
+- Records 1-4 carry `fn_flags = 0x08000000` and a literal whose 8-byte key
+  reads back as `0x0000000600000001` - the two small `u32`s between names are
+  literal keys, not obfuscation.
+- The 20-byte descriptor is `[literal_count][opcode_count][0][0][0]`:
+  `binancepay_link` is `17 / 0x80`, `call_bp_proxy` is `4 / 0x16`,
+  `bp_call_api` is `14 / 0x36`, and both counts match the fields that follow.
 
 ```bash
-python tools/ic72_record_walk.py body72.bin                 # records from 0x4
-python tools/ic72_record_walk.py body72.bin --skip 0x2be    # record 2 only
+python tools/ic72_record_walk.py body72.bin --resync --strings 3
 python tools/ic72_record_walk.py body72.bin --json
 ```
+
+## M3.4 - the body is five records, and four data segments are readable
+
+The body map above is the whole file. There is no class section: the `u16`
+after the last record is zero, so `sub_1800A0920` is never entered on this
+sample.
+
+The interesting split is in the payloads.
+
+| record | payload | printable | content |
+| --- | --- | --- | --- |
+| `''` (file level) | 616 | 0.38 | opaque, uniform entropy |
+| `binancepay_config` | 1575 | 0.84 | literal pool plus the DHRU config blob |
+| `binancepay_link` | 11778 | 0.26 | literal pool plus opcode stream |
+| `call_bp_proxy` | 3855 | 0.30 | literal pool plus opcode stream |
+| `bp_call_api` | 6456 | 0.25 | literal pool plus opcode stream |
+
+The four function payloads all start with the same eight bytes,
+`02 ac df 5b 00 00 00 08`, and the next dword climbs with the record order
+(`0x5b28c0c0`, `0x5b2a3820`, `0x5b2d2320`, `0x5b2d25f0`). Those `0x5b......`
+words are base plus offset into the encoder's data layout, not heap pointers.
+
+Readable, straight out of the segment:
+
+```
+config  binancepay_config | configarray | [4'name[4'Types6'System5126;...
+        ... 5'Values43'Binance Pay (https://merchant.binance.com/) ...
+        s7'API Key ... 11'Descrip...
+link    binancepay_link | params | config | lng_languag | licinfo | paybp |
+        bppaymentsuccess | entityBody | LICENSE | _res_proxy | _order_status
+proxy   call_bp_proxy | data | token | curl_init | curl_setopt_array |
+        CURLOPT_URL | https://api.dhru.com//integration/api/v1/proxy |
+        CURLOPT_RETURNTRANSFER
+api     bp_call_api | url | data | api_key | secret_key | _entityBody |
+        length | headers | payload | json_encode
+```
+
+So the literal and identifier layer of every function is plaintext in the
+file. Only the file-level payload is opaque, which is consistent with M3.2:
+that one segment is produced with the runtime license key.
+
+### The interpreter is versioned, not universal
+
+`sub_180001EB0(mode, variant)` builds the bytecode engine object. Mode 0
+installs `sub_180001E10` - the M3.2 buffer cipher - as the decrypt handler.
+Modes 1 through 6 instead resolve a handler table through
+`sub_18009A7B0(&off_1800B4A00)`, `&off_1800AED10`, `&off_1800B05F0`,
+`&off_1800ACC80`, `&off_1800B8F50` and `&off_1800B16D0`.
+
+Each table is one encoder generation's opcode dispatch, so the VM reversal has
+to pick the table that matches this file's encoder version (12.0.2) before any
+opcode stream can be decoded. That is the next milestone, and it is the only
+step between the current state and PHP output: the record layer, the literal
+tables, the argument lists and the opcode counts are all known.
