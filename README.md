@@ -1,6 +1,6 @@
 # Decode-Anything: Unified PHP Decompiler & Deobfuscator
 
-[![Python Tests](https://img.shields.io/badge/tests-194%20passed-brightgreen.svg)](tests/)
+[![Python Tests](https://img.shields.io/badge/tests-199%20passed-brightgreen.svg)](tests/)
 [![Target PHP](https://img.shields.io/badge/PHP-7.2%20%E2%80%93%208.4-blue.svg)](https://php.net)
 [![Supported](https://img.shields.io/badge/Encoders-ionCube%20%7C%20SourceGuardian%20%7C%20YAK%20Pro-purple.svg)](https://github.com/0xLLVEL/decode-anything)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -157,9 +157,9 @@ The test suite covers IonCube AST reconstruction, SourceGuardian container decod
 python -m pytest tests/
 ```
 
-All 194 test cases pass:
+All 199 test cases pass:
 ```text
-============================= 194 passed in 23.60s =============================
+============================= 199 passed in 8.11s ==============================
 ```
 
 ---
@@ -177,7 +177,7 @@ All 194 test cases pass:
 - [`ioncube-php8-decompiler/`](ioncube-php8-decompiler/) — High-level PHP abstract syntax tree (AST) engine:
   - `src/php_reconstructor/decompiler/` — Opcode handlers, CFG structurer, and optimization passes.
   - `src/php_reconstructor/emitter/` — High-fidelity PHP code emitter.
-- [`tests/`](tests/) — Automated test suite (194 tests).
+- [`tests/`](tests/) — Automated test suite (199 tests).
 
 ---
 
@@ -214,7 +214,8 @@ All 194 test cases pass:
 - [x] `--php-version` ABI pinning with header autodetection, and batch/scan support for the 7.x path.
 - [x] Static recovery of the 7.2 text layer: the record parser at `0x6C340` hands `HR+c` payloads to `sub_10065D50`, whose reverse table at `0x10093BC0` decodes the base64 body byte-exactly (9,699 bytes, record magic `0x67A6BF45`).
 - [x] 7.2 header and body verified statically: chunked envelope, `MT4IC` PRNG, MD4 trailer, and both body checksums match.
-- [ ] Static 7.2 `sv5` record walker and opcode-stream decoder, so the PHP runtime can be dropped for 7.x entirely.
+- [x] Static 7.2 `sv5` record walker and opcode decoder: the opcode mask is reproduced from each record's key pair (397/397 opcodes equal the runtime dump), and the file-level record cipher (`sub_180001E10`) plus its 16-byte key (`sub_180003570`) are reversed, so all five `op_array`s now decode from the file alone.
+- [ ] Derive the four program key words (`0xB8`, record count, `0`, a per-file hash) without a runtime, so the file-level record needs no supplied key — the last step before the PHP runtime can be dropped for 7.x.
 
 ### 6. 🔒 Zend Guard Decompiler
 - [ ] Support for legacy Zend Guard protected archives (`Zend\x00` format).

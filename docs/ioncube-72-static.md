@@ -2503,3 +2503,91 @@ the payload framing is open.
 The x86 twin used for M4.4 through M4.9 is not the shipped artifact and its
 findings should not be reused. Everything in this section was measured on the
 PE32+ loader that actually runs.
+
+## M4.12 — the file-level record, decoded (cipher and key both solved)
+
+The one record that stayed unreadable was record 0, the file-level `op_array`.
+Its payload is not a record image with masked opcodes: it is a record image
+encrypted with the loader's own record cipher. Both halves are now known.
+
+### The cipher
+
+Live proof came from a page trap. Marking the 616-byte payload page read-only
+faults on the first write, and the faulting instruction is `loader+0x1E89`:
+
+```
+0x180001E10(a1, src, len, key, klen, dst)
+    rng = sub_18009D540(6)
+    sub_18009D2E0(rng, sub_180007340(key, klen), sub_180007390(key))
+    for i in range(len):
+        dst[i] = src[i] ^ BYTE1(sub_18009CA40(rng))
+```
+
+That is cipher id 0 from the factory, and it is the same two-word multiply-add
+already reversed as PRNG-6. The difference from `engines.ioncube.body72.Type6Rng`
+is the stepper: `sub_18009CA40` advances the generator once per byte, while the
+cached `next()` this module exposes serves each dword twice. Feeding the Python
+port straight in therefore produced a doubled stream (`fa fa 29 29 08 08 ...`
+instead of `fa 29 08 26 18 f9 ...`). `body72.decrypt_record` steps the raw
+recurrence once per output byte and is byte-exact over all 616 bytes.
+
+### The key
+
+`sub_180003570` builds a 17-byte string from four dwords (`sub_180004170`
+mode 1). Each dword is written **big-endian**, every byte is incremented by
+one, and a NUL closes the buffer. The length the cipher receives is
+`zend_string->len + 1`, so the terminator is part of the hash input:
+
+```
+words 0xB8, 0x5, 0x0, 0x29806FF7
+key   01 01 01 b9  01 01 01 06  01 01 01 01  2a 81 70 f8  00
+```
+
+`engines.ioncube.body72.record_key` reproduces it exactly.
+
+### The record
+
+With the key, `body72.decrypt_record` turns the payload into the record image
+the loader builds in memory (`02 ac df 5b 00 00 00 00 ...`), and the image is
+walked with two differences from the function records:
+
+| field | function records | file-level record |
+| --- | --- | --- |
+| `ops`/`cells` pair | `0x88 + 20 * args` | `0x78` (no name field, no argument table) |
+| operand records | gated by the class byte | always three, ordered `result, op1, op2` |
+| line suppression | class bit `0x08` zeroes the line | no suppression bit |
+
+`tools/ic72_record0.py` applies all three and prints the record;
+`tools/ic72_static_dump.py --key-words` folds it into the normal dump.
+
+```
+python tools/ic72_record0.py sample.php --words 0xb8,5,0,0x29806ff7   --truth scratch/rt/binancepay_asli.opcodes.json
+```
+
+Result for `binancepay_asli.php`: `ops=11 cells=12 aux=165/165`, all eleven
+opcodes equal to the runtime dump, every line number equal (3, 3, 3, 3, 3, 3,
+5, 36, 184, 209, 256), operands in the same slots.
+
+### What is left: where the four dwords come from
+
+Measured across two samples (`binancepay_asli.php`, `freetrial.php`):
+
+| word | binancepay | freetrial | reading |
+| --- | --- | --- | --- |
+| 0 | `0xB8` | `0xB8` | constant |
+| 1 | `5` | `2` | total record count (1 file-level + N functions) |
+| 2 | `0` | `0` | constant |
+| 3 | `0x29806FF7` | `0x201A58A2` | per-file hash, still unidentified |
+
+Word 3 is deterministic per file (identical across runs) and is not stored
+anywhere in the file, the payload, or the inflated body. The hashes the loader
+exports (`0x180007340`, `0x180007390`) are only ever called on the 17-byte key
+itself during the run, and CRC-32/Adler-32/FNV-1a/djb2/sdbm/jenkins over the
+raw file, the payload, the body, the record payloads and every structural
+sub-range all miss. The four dwords live inside the loader's program context,
+immediately before the interned name table (`binancepay_link`, `call_bp_proxy`,
+`secret_key`, ...), which makes a name-table digest the most likely reading.
+
+Consequence: record 0 decodes statically once the four words are supplied, and
+only word 3 needs a producer. Everything downstream of the key is finished.
+

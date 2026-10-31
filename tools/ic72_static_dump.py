@@ -41,6 +41,24 @@ def operand_text(slot, kind, node, literals):
     return "%s(%d)" % (kind, node)
 
 
+FILE_LEVEL_HEAD = 0x78
+
+
+def decode_file_level(image, record, xor_key, words):
+    """Decrypt and walk the file-level record image."""
+
+    from engines.ioncube.body72 import decrypt_record, record_key
+    from tools.ic72_opcode_mask import mask_stream
+
+    key = record_key(words)
+    plain = decrypt_record(image, key)
+    walked = walk_record(plain, 0, head=FILE_LEVEL_HEAD, fixed_aux=True)
+    walked["image"] = plain
+    walked["key"] = key
+    walked["masks"] = mask_stream(record.key1, record.key2, xor_key, walked["ops"])
+    return walked
+
+
 def main(argv):
     body = Path(argv[1] if len(argv) > 1 else "scratch_body72.bin").read_bytes()
     mask_path = argv[argv.index("--mask") + 1] if "--mask" in argv else None
@@ -58,14 +76,23 @@ def main(argv):
         header, _ = decode_file(Path(php_path), payload_index=0)
         xor_key = int(str(header["initial_header"]["bytecode_xor_key"]), 0)
         masks = record_masks(body, xor_key)
+    words = None
+    if "--key-words" in argv:
+        words = [int(part, 0) for part in argv[argv.index("--key-words") + 1].split(",")]
     want = int(argv[argv.index("--record") + 1]) if "--record" in argv else None
     truth = load_truth(argv[argv.index("--truth") + 1]) if "--truth" in argv else {}
 
     for index, record in enumerate(resync(body, 4)):
-        if index == 0 or (want is not None and index != want):
+        if (index == 0 and not words) or (want is not None and index != want):
             continue
         payload = body[record.payload_offset : record.payload_offset + record.payload_size]
-        walked = walk_record(payload, ARG_COUNT[index])
+        if index == 0 and words:
+            decoded = decode_file_level(payload, record, xor_key, words)
+            payload = decoded["image"]
+            walked = decoded
+            masks[record.name or ""] = decoded["masks"]
+        else:
+            walked = walk_record(payload, ARG_COUNT[index])
         opcodes = truth.get(record.name)
         print("=" * 92)
         print(

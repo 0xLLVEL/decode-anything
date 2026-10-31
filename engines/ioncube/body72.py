@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 M32 = 0xFFFFFFFF
@@ -125,3 +126,32 @@ def decrypt_buffer(ciphertext: bytes, key: bytes, shift: int = 8) -> bytes:
 def keystream(key: bytes, count: int, shift: int = 8) -> bytes:
     rng = Type6Rng.from_key(key)
     return bytes((rng.next() >> shift) & 0xFF for _ in range(count))
+
+
+def record_key(words: Sequence[int]) -> bytes:
+    """``sub_180003570`` -- the 17-byte key from four little-endian dwords.
+
+    Each dword is written big-endian, every byte is incremented by one, and a
+    NUL terminator closes the buffer. The loader keeps the key length as
+    ``zend_string->len + 1``, so the terminator is part of the hash input.
+    """
+    if len(words) != 4:
+        raise ValueError("record_key wants exactly four dwords")
+    return bytes((byte + 1) & 0xFF for word in words for byte in word.to_bytes(4, "big")) + b"\x00"
+
+
+def decrypt_record(data: bytes, key: bytes) -> bytes:
+    """``sub_180001E10`` -- the record cipher.
+
+    Same two-word multiply-add as :class:`Type6Rng`, but the caller
+    (``sub_18009CA40``) performs one state step per byte instead of serving the
+    cached dword twice. The byte lane is ``BYTE1`` of the result.
+    """
+    state0, state1 = seed0(key), seed1(key)
+    out = bytearray(len(data))
+    for index, value in enumerate(data):
+        state1 = ((state1 >> 16) + 30345 * (state1 & 0xFFFF)) & M32
+        state0 = ((state0 >> 16) + 18000 * (state0 & 0xFFFF)) & M32
+        word = (state0 + (((state1 << 16) | (state1 >> 16)) & M32)) & M32
+        out[index] = value ^ ((word >> 8) & 0xFF)
+    return bytes(out)

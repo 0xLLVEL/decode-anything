@@ -55,8 +55,25 @@ def literal_text(literals, node):
     return literals[node - 1].text
 
 
-def walk_record(payload: bytes, arg_count: int):
-    head = 0x88 + 20 * arg_count
+def walk_record(
+    payload: bytes,
+    arg_count: int,
+    head: int | None = None,
+    fixed_aux: bool = False,
+):
+    """Walk one record image.
+
+    ``head`` is the offset of the ``ops``/``cells`` pair. Function records put
+    it at ``0x88 + 20 * args``; the file-level record has no name field and no
+    argument table, so its pair sits at ``0x78``.
+
+    ``fixed_aux`` selects the file-level operand layout: three 5-byte records
+    per opcode in ``result, op1, op2`` order, with the class byte carrying no
+    presence bits and no line suppression.
+    """
+
+    if head is None:
+        head = 0x88 + 20 * arg_count
     ops, cells = struct.unpack_from("<2I", payload, head)
     word_base = head + 8
     words = [struct.unpack_from("<I", payload, word_base + 4 * k)[0] for k in range(cells)]
@@ -80,16 +97,29 @@ def walk_record(payload: bytes, arg_count: int):
             cursor += 1
 
         operands = []
-        for bit, slot in ((0x01, "op1"), (0x02, "op2"), (0x04, "result")):
-            if class_byte & bit:
+        if fixed_aux:
+            slots = []
+            for _ in range(3):
                 kind, node = struct.unpack_from("<BI", aux, aux_cursor)
                 aux_cursor += 5
-                operands.append((slot, OPERAND_TYPES.get(kind, kind), node))
-            else:
-                operands.append((slot, "UNUSED", 0))
+                slots.append((OPERAND_TYPES.get(kind, kind), node))
+            result_slot, first, second = slots
+            operands = [
+                ("op1", first[0], first[1]),
+                ("op2", second[0], second[1]),
+                ("result", result_slot[0], result_slot[1]),
+            ]
+        else:
+            for bit, slot in ((0x01, "op1"), (0x02, "op2"), (0x04, "result")):
+                if class_byte & bit:
+                    kind, node = struct.unpack_from("<BI", aux, aux_cursor)
+                    aux_cursor += 5
+                    operands.append((slot, OPERAND_TYPES.get(kind, kind), node))
+                else:
+                    operands.append((slot, "UNUSED", 0))
 
-        if class_byte & 0x08:
-            line = 0
+            if class_byte & 0x08:
+                line = 0
 
         out.append(
             {
