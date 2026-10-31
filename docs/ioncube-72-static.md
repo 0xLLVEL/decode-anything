@@ -1003,3 +1003,70 @@ Brute force over every start offset of every function segment, requiring all
 segment holds a packed encoding that is expanded into these records at load
 time, not the records themselves. Locating that expander is the remaining gap
 before the stream at `+0x50` can be turned into opcodes.
+
+## M3.7 Record reader: byte callbacks, literal construction, op_array layout
+
+The record parser does not memcpy a struct image. It pulls bytes through a
+callback stored at `ctx+168`:
+
+```
+(*(ctx + 168))(ctx, dst, n)        raw byte read
+sub_18000B830(ctx, n)              allocates, reads n bytes, returns the block
+sub_18000B8A0(ctx, &size)          length-prefixed blob (the reader that masks 0x9FFFFFFF)
+sub_18009FFC0(ctx, &ptr, &len)     u16 length, then len+1 bytes, wrapped as a string
+```
+
+That is why the payload reads like a stream of tokens rather than an array: the
+loader walks it with a cursor and decodes as it goes.
+
+### Literal array
+
+`sub_18009DFE0(ctx, op_array)` fills `op_array+80` with `8 * literal_count`
+bytes and loops the count from `op_array+72`. Per literal it reads a blob, wraps
+it in a zend_string (`refcount 1`, `type 6`, `len`, bytes), and then overwrites
+the first eight bytes with a second read of exactly 8 bytes:
+
+```
+s[0..7] = *(u64 *) sub_18000B830(ctx, 8)
+```
+
+Those eight bytes are `refcount` and `type`, which is exactly the
+`0x0000000600000001` word every literal in the sample carries: refcount 1,
+`IS_STRING`. M3.5 recorded that word as unexplained; it is a copied string
+header, not obfuscation.
+
+### op_array constructor
+
+`sub_180002560(dest, ..., descriptor)` allocates the 224-byte op_array and
+installs, in order:
+
+```
++08   48-byte header copy, three 16-byte blocks from the record header
++32   parser callback
++40   (*(uint8 *)callback != 0)
++48   literal table (filled by sub_18009DFE0)
++64   payload buffer
++72   literal count        +76  opcode count
++112  engine               +120 engine word
++160  8 * descriptor[4]    +168 zeroed table of that size
++200  inner struct, +136 set by sub_180002550
+```
+
+The 20-byte descriptor is copied, applied, then `efree`d, so it exists only to
+size the object. `sub_18009E400(op_array)` runs first and zeroes the tail fields
+`+176..+200` before anything is installed.
+
+### Function extents without IDA
+
+`tools/ic72_loader_map.py` reads `.pdata` and reports all 3673 function ranges,
+with `--at`, `--range` and `--largest` filters. Decompiling through IDA costs a
+300 s round trip per function; this costs nothing and pins down which function
+owns an address before spending one.
+
+### Still open
+
+The 32-byte op record builder has not been located yet. The reader family above
+suggests the straight-line candidate: one call that reads `32 * opcode_count`
+bytes through the `ctx+168` callback and then walks the result. Everything else
+in the record — header, arguments, literals, flags — is now accounted for, so
+that read is the only unexplained consumer of the segment.
