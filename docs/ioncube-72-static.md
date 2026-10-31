@@ -2086,3 +2086,51 @@ and 8.x v6+ has the `0x95` sentinel in `_b3c0_opcode_sentinel`. Identical
 sentinel, different seed source.
 
 Short version: 8.x ships the key in the file. 7.2 ships it in the licence.
+
+## M4.4 The 32-bit loader, live: the 69069 family is not the mask
+
+The build that actually runs is x86. `ioncube_loader_win_7.2.dll` in
+`scratch/refs/ic72dump-opcodes/runtime/ext` is PE32, image base `0x10000000`,
+and ships an IDA database beside it. Every routine below is that build.
+
+### Recovered, executed, and observed
+
+| RVA | semantics |
+|---|---|
+| `0x100890D0` | `eax = ecx * 69069 + 1234567` |
+| `0x100890E0` | xorshift A: `x^=x<<13; x^=x>>17; x^=x<<5` |
+| `0x10089100` | xorshift B: `x^=x>>9; x^=x*2; x^=x>>7` |
+| `0x10089120` | `[edx+0x14] = (ecx & 1) ? A : B` |
+| `0x10089140` | xorshift C, `(ecx % 9) + 1` rounds |
+| `0x10089190` | generator, context `[0]=count [4]=cursor [8]=lcg [0xc]=xs [0x10]=? [0x14]=fn [0x18]=array` |
+| `0x10089220` | `lcg = 69069*lcg + 123; xs = fn(xs); array[i] = lcg + xs` |
+
+Two facts fall out that the x64 read could not settle:
+
+1. **Both streams come from one seed.** `CFF0` and `D060` are not two
+   independent inputs - the LCG seed is `69069*S+1234567` and the xorshift state
+   is `C^(S mod 9 + 1)(S)`, with the A/B variant chosen by `S & 1`. One 32-bit
+   seed drives the whole array.
+2. **It is called three times, always with `count = 4096`.** Observed seeds:
+   `0x967A1529`, `0x05A3AEF6`, `0x8F03ED9E`. The first is the file header seed
+   verbatim, so this family is file-seeded.
+
+### What that rules out
+
+The 4096-dword pools were dumped from memory (16 KB each) and searched for the
+recovered mask bytes: no 8-byte window, and no stride mapping (lanes 0-3, steps
+1/2/3/4/8/-1, every offset). The opcode mask is **not** taken from these pools.
+
+So M3.17's premise was wrong: the `69069 + xorshift` family that `sub_18009D0D0`
+runs is a general 4096-word random source with a cursor, not the opcode mask
+generator. It is seedable from the file, which is why it looked like the answer.
+
+### Next target
+
+The mask is written to the op-array local struct and read back at `+64` by the
+`E8B0` twin. Hook the x86 `E8B0` consumer, take its `base` pointer, and walk one
+frame back to whoever filled it. That is the only remaining unknown.
+
+`tools/ic72_mask_hook.js` holds the working hook set; `ic72_mask_hook_run.py`
+drives `php.exe` from the vendored runtime with `scratch/hook_wrapper.php` to keep
+the process alive long enough for the module observer to land.
