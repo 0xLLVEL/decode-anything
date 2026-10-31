@@ -2306,3 +2306,93 @@ The `+0x18` running-XOR chain is real and is not the opcode mask. It has been
 removed from the candidate list along with the 69069 family. What remains true:
 the opcode transform consumes one byte per opcode from somewhere, the result is a
 Zend opcode, and the routine that does it has not been located in this build.
+
+## M4.9 The word array, live, and what the mask is not
+
+Located the op array word table in memory by its stored-byte rhythm, using a
+wildcard over the class and line bytes:
+
+```
+3f ?? ?? ?? a8 ?? ?? ?? 34 ?? ?? ?? fb ?? ?? ??
+```
+
+Two live copies for api (0x312910E0 in a 2 MB private range, 0x316166DE in the
+loader heap) and the same for proxy. The layout is exactly what the static walk
+predicts:
+
+```
+3f 07 d1 00   a8 07 d1 00   34 07 d1 00   fb 07 d1 00
+17 0f d5 00   c7 1f d6 00   0e 00 00 00   99 07 d7 00
+```
+
+stored byte, class byte, line u16, with class `0x1F` slots followed by a literal
+u32. The stored bytes are still stored at rest - the loader never writes the mask
+into this array, which is why every scan for mask bytes came up empty.
+
+### The mask is not a function of anything in the word
+
+Correlated the mask against every cheap feature of the opcode stream, 397 samples:
+
+```
+idx_lo              1.5%      prev_stored     0.8%
+idx_hi              1.0%      stored          0.5%
+prev_op             0.5%      next_stored     0.0%
+op                  0.3%      op^prev_op      0.0%
+```
+
+Not affine either: solving `op = a*stored + b` on the first two bytes of link gives
+`op = 255 - 6*stored`, which misses the third byte (53, expected 8). And the
+stored-to-mask mapping is not functional inside a record - link has 160 distinct
+stored bytes but only 109 of them map to a single mask byte.
+
+So the mask is an independent keystream, one byte per opcode, per record.
+
+### The PRNG helpers are definitively out
+
+Instrumented every arithmetic helper in the loader and read them after a full load:
+
+```
+lcg=3  xsA=8192  xsB=20480  pick=3  xsC=3  gen=3
+```
+
+Three generator calls total, twenty thousand xorshift steps from them, and nothing
+else. The mask has 397 bytes and the only random source in the process was invoked
+three times to build three 4096-word pools, none of which contain it. That closes
+the PRNG route by count, not by inference.
+
+### Where this leaves the static lane
+
+Everything except the opcode byte is decoded statically and verified 397/397.
+The opcode needs 397 keystream bytes whose producer has not been found; it is not
+in the file, not in the decoded body, not in the pools, not in the three PRNG
+helpers, not a function of the word, and not present in the process after load.
+
+### The body keystream is out too
+
+Two more probes, both measured, both negative.
+
+Byte-wise recurrences: no affine `m[i+1] = a*m[i] + b mod 256` for any record, no
+`m[i+1] = m[i] ^ m[i-1]`, no period under 256.
+
+Word-wise recurrences on mask dwords: none of xorshift(13,17,5), (10,15,4,13),
+(9,1,7), (7,1,11), (5,2,9), (6,13,25) chains, and no LCG `a, c` fits any record.
+
+The v8 trick, tried against 7.2: `mask ^ keystream` being a low-period pattern. Ran
+the Type6 keystream under eleven key materials (the five header constants both
+endiannesses plus the body head) across all four byte lanes, 176 combinations, no
+period under 16.
+
+And the whole 397-byte concatenation of every record's mask, searched as a
+contiguous run inside 40000 bytes of keystream on every lane and key: not present.
+
+### Reference data
+
+The full api mask, for whoever picks this up next:
+
+```
+00 97 0b c4 2c 80 d1 f6 ef 25 80 ca 0c ce 06 00 d5 c3 64 11 4a db c1 38
+e4 ed 8b c4 9e f6 89 fc 47 f3 ea ab b6 07 0b 8c e9 fc ac 35 82 5c 00 10
+ae 4f 94 91 17 52 fb 30 1b 29 90 02 de 45 4f 55 36 71 22 0a d2 76 36 9f
+23 59 6c c3 8e a3 44 b1 35 01 16 01 e8 d0 b7 12 d4 59 3a a9 20 57 31 95
+c4 6a fe 15 64 5a eb e1 04 54 46 76 c6 9b 90
+```
