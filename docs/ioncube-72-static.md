@@ -34,7 +34,7 @@ Current 7.x path is runtime-only (`engines/ioncube/runtime_dump.py`); `dumper.SU
 Sample: `binancepay_asli.php`, header `php_version_code = 72`, `serialization version = 5`, `bytecode_xor_key = 0x00364730`, `php_flags = 0x00048487`.
 
 - Body length: 25712 bytes.
-- Main record: offset `0x0`, blob at `0x4C`, length 616, record ends at `0x2B4`.
+- Main record: offset `0x4`, blob at `0x54`, length 616, record ends at `0x2BC`.
 - Blob layout: 8-byte header (tag `0x268` + 4 bytes), then 608 bytes payload.
 - `608 = 38 * 16` exactly; payload entropy 7.668 bit/byte. Block alignment is consistent with a 16-byte cipher, but it does **not** prove AES: the loader's AES routines are not reachable from the decode path by xref, so AES may serve licensing/signatures instead.
 - The 8.x inner-record parser rejects it: `metadata checksum mismatch: stored 0x865D, calculated 0xE56D` → the 124-byte metadata layout is 8.x-specific.
@@ -675,3 +675,86 @@ blob at 36-38% printable, i.e. indistinguishable from random, which is the
 expected fingerprint of a key that is not present in the file. A non-dynamic
 sample is needed to close the opcode lane statically; the record walker itself
 is independent of that and can proceed now.
+
+## M3.3 - the sv5 record layout, byte-exact
+
+The record layer is now walked, not guessed: `tools/ic72_record_walk.py` parses
+the body and lands on the exact same boundaries the loader does. Two records
+parse on `binancepay_asli.php`, and the second one validates every field
+because its literal pool is in the clear.
+
+### Framing (sub_1800A02A0, dynamic-key branch)
+
+```
+u32 payload_size          the byte count read back at the end
+u32 key1                  record key words, per record
+u32 key2
+  sub_1800A0090 fields ... (see below)
+u32 blob_len
+blob[payload_size]        ASCII data segment for the record
+```
+
+`sub_18000B830(stream, payload_size)` reads the data segment; the second
+`u32` before `sub_18009D630` is the length the loader stores alongside it.
+The data segment is the record's string/opcode pool, and it is where the
+literal text lives (record 2 keeps the whole DHRU config pool there).
+
+### Field order (sub_1800A0090)
+
+```
+sub_180003730   u8 flag
+                u32 n1, n1 bytes                (empty in both records)
+                u32 n2, then n2 * (u32 len + len bytes)
+                u32, u32
+sub_18009FFC0   u16 name_len, name_len+1 bytes  (0 means no name)
+20 bytes        descriptor (sub_18009D610 = B830(20))
+u32             op_array +0x20
+u32             op_array +0x24
+u32             fn_flags (& ~8)
+sub_18009E500   per argument: u32 flag, then a string when flag != 0
+u32             literal count
+sub_18009DFE0   per literal: string + 8-byte key
+u32             num_args
+u8              construct flag
+u32             filename reference, 0xFFFFFFFF means none, else a string
+```
+
+`sub_18000B8A0` is the string reader: `u32 word`; a negative word means the
+empty string, otherwise the length is `word & 0x9FFFFFFF` and the payload is
+`length + 1` bytes when bit 29 is clear.
+
+### What the walker produces
+
+```
+#0 0x004..0x2bc A=616  keys=0x4ec3cf8c/0x3481662b  blob@0x054
+   name='' fn_flags=0 literals=0 filename=None
+#1 0x2be..0x975 A=1575 keys=0x16022aed/0x0e258024  blob@0x34e
+   name='binancepay_config' fn_flags=0x8000000
+   literals=1 ('configarray', 0x0000000600000001)
+   filename='binancepay_config'
+```
+
+Two details this settles:
+
+- The main data segment is at `0x54`, not `0x4C`. The `0xFFFFFFFF` and
+  `0x268` pair at `0x4C` is the *filename reference* followed by the *blob
+  length*, both plaintext. Every earlier attempt to decode "the 616 bytes at
+  `0x4C`" started two fields early and chewed on a length word.
+- Record 2 carries `fn_flags = 0x08000000` and one literal named
+  `configarray`, whose 8-byte key reads back as `0x0000000600000001` - i.e.
+  the two small `u32`s we kept seeing between names are literal keys, not
+  obfuscation.
+
+### Where the walk stops
+
+The next record does not start at `0x975`; the two bytes at `0x2BC` (`06 00`)
+and the bytes at `0x975` belong to the group framing `sub_1800A16E0` drives,
+which interleaves op_array groups, class groups (`sub_1800A0920`, with
+`u16 method_count - sub_18009D850(...)`) and top-level counts. The walker
+covers the op_array case; reproducing the group order is the next step.
+
+```bash
+python tools/ic72_record_walk.py body72.bin                 # records from 0x4
+python tools/ic72_record_walk.py body72.bin --skip 0x2be    # record 2 only
+python tools/ic72_record_walk.py body72.bin --json
+```
