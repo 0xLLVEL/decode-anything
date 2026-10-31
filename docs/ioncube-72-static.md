@@ -1874,3 +1874,48 @@ array that is only ever read as its first `ops` bytes. The step is known. What i
 missing is the seed, and no file-local material tested so far produces it. Until
 the seed source is identified, the opcode byte stays masked and the operand half
 of every opcode remains the only trustworthy output.
+
+## M4.0 The runtime path already finishes this file
+
+The static work in M3.1 through M3.17 was never the only route. `engines/ioncube/
+runtime_dump.py` drives the vendored PHP 7.2 bundle at
+`scratch/refs/ic72dump-opcodes` (PHP 7.2.34 NTS x86, `php_opcodedump.dll`,
+`ioncube_loader_win_7.2.dll`) and reads the op arrays the loader builds in
+memory. `available_versions()` reports `[71, 72, 74]`.
+
+Run on `binancepay_asli.php`:
+
+```
+python decompile.py binancepay_asli.php -o out --php-version 72
+    runtime opcode dump: PHP 7.2
+    -> Output saved: bp72_out (5039 bytes)
+    [+] Validation: PASS (valid PHP)
+```
+
+Five op arrays, four functions and the main block:
+
+| op array | opcodes |
+|---|---|
+| main | 11 |
+| `binancepay_config` | 3 |
+| `binancepay_link` | 234 |
+| `call_bp_proxy` | 49 |
+| `bp_call_api` | 111 |
+
+Those four counts are exactly what `tools/ic72_op_walk.py` derives from the raw
+payload, which makes the static walk an independent check on the loader rather
+than a substitute for it.
+
+The emitted file decodes the file-level 616 byte segment too: the main block
+opens with `exit('<h1 ...>Restricted Access</h1>')`, so the block M3.x could not
+touch from file bytes alone is resolved at runtime like everything else.
+
+Output is `sha1 97EB984CB848BFA3DA99B46EDC07C2ADC2C1F463`, byte identical to the
+reconstruction already sitting beside the sample. The decode was already
+complete; what was missing was the record of how to reproduce it on demand.
+
+### Rule going forward
+
+For any ionCube sample with a runtime bundle for its PHP version, run the bundle
+first. Static reversing is for versions with no bundle, for the segment the
+runtime refuses to load, and for the record of what the bytes mean.
