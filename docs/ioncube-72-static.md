@@ -1240,3 +1240,115 @@ and the two uses have not been reconciled.
 The opcode stream itself. The chain above accounts for header, name, literals,
 arguments and one trailing blob; opcodes are the only consumer left, and the blob
 read immediately before `sub_18009F710` is the obvious candidate.
+
+## M3.10 The op stream: sub_18009ED60 and sub_18009F1B0
+
+The opcode section is read by `sub_18009ED60`, which `sub_18009FC70` calls with the
+container struct. It is three counted reads:
+
+```
+u32 opcode_count                       -> container+0x08
+u32 word_count                         -> container+0x28
+word_count * 4 bytes                   -> container+0x20   the word array
+u32 aux_count                          -> container+0x38
+aux_count * 5 bytes                    -> container+0x30   five bytes per op
+```
+
+`sub_18009F1B0` then expands it. In full:
+
+```
+v6 = container+0x08                       opcode_count
+op = emalloc(32 * v6)                     the zend_op array
+cursor = 0
+while cursor < container+0x28:            word_count, not opcode_count
+    word = ((u32*) container+0x20)[cursor++]
+    opcode = sub_18009E8B0(op, op_index, word, flags, base, ctx)
+    if opcode > 0xC5: fail
+    push opcode into the handler map
+    sub_18009E910, sub_18009E9E0, sub_18009EA30, sub_18009EAA0(literal_count),
+    sub_18009EAE0
+    op += 32; ++op_index
+if (op - start) / 32 != opcode_count: zend_error
+```
+
+So the loop bound is the **word count**, the allocation is the **opcode count**, and
+the equality of the two after the walk is checked before the op_array is used. A
+record that does not divide exactly is rejected, which is why nothing has to be
+guessed: the counts and the widths have to close.
+
+### Word fields
+
+The word is `[value:u8][class:u8][line:u16]`, little endian, and each field lands in
+a different slot of the 32-byte op:
+
+| word field | slot | meaning |
+|---|---|---|
+| `value` (byte 0) | `+28` | opcode, xor-decoded when `flags < 0` |
+| `class & 0x18` (bits 11..12) | `+20` | result-type selector |
+| `line` (bytes 2..3) | `+24` | line number |
+
+`sub_18009E8B0` stores the raw byte at `+28`, then:
+
+```
+if (flags >= 0) return raw
+mode = ctx+0x10
+if (mode >= 3 && raw == 0x95) { base[op_index] = 0 }
+result = raw ^ base[op_index]
+if (mode >= 3 && result == 0x95) { base[op_index] = 0; return raw }
+return result
+```
+
+`base` is indexed by **op index**, not by byte offset, so it is the five-byte-per-op
+array from `sub_18009ED60`. `0x95` is the escape that means "no key for this op".
+
+`sub_18009E9E0` turns the class byte into `+20`:
+
+| `class & 0x18` | `+20` |
+|---|---|
+| `0x00` | 0 |
+| `0x08` | 1 |
+| `0x10` | 60 |
+| `0x18` | next word from the array |
+
+That is the answer to the `0x1f` observation from M3.8: `0x1f & 0x18 == 0x18`, so
+class `0x1f` is exactly the case that pulls a following word. `0x07 & 0x18 == 0`
+and `0x0f & 0x18 == 0x08`, which is why the other two classes are never followed by
+an immediate.
+
+`sub_18009EA30` does the same for the line: high half goes to `+24`, and `0xffff`
+pulls the next word instead.
+
+### The boundary rule
+
+One op consumes one word for itself plus one word per operand bit set in its spec
+entry:
+
+| spec flag | operand |
+|---|---|
+| `0x0001` | op1 |
+| `0x0002` | op2 |
+| `0x0004` | result |
+
+So `width = 1 + popcount(spec[opcode] & 7)`, plus one extra word for each word in
+the op that carries a `0x1f` class or a `0xffff` line.
+
+`binancepay_config` is the clean check: 1 opcode, 3 words, and its spec entry has
+two operands set, so `1 + 2 = 3` and the record closes on the terminator exactly.
+
+`tools/ic72_op_split.py` sweeps a single xor pad over all 256 values and reports
+which ones make every record close on its own word count:
+
+| record | words | ops | closes |
+|---|---|---|---|
+| `binancepay_config` | 3 | 1 | yes, many pads (1 op, so almost anything fits) |
+| `binancepay_link` | 269 | 128 | no single pad |
+| `call_bp_proxy` | 74 | 22 | pad 178, both escape modes |
+| `bp_call_api` | 151 | 54 | no single pad |
+
+Two records closing exactly at their declared opcode count proves the width model.
+Two failing proves the pad is **not** a per-record constant, which matches
+`sub_18009E8B0`: the key is `base[op_index]`, one byte per op, taken from the
+`aux_count * 5` array. The sweep assumed one pad for the whole record and is
+therefore only expected to close by luck.
+
+Open: the internal layout of the five-byte entry, and which byte of it is the key.
