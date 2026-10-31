@@ -1352,3 +1352,95 @@ Two failing proves the pad is **not** a per-record constant, which matches
 therefore only expected to close by luck.
 
 Open: the internal layout of the five-byte entry, and which byte of it is the key.
+
+## M3.11 The rest of the read chain, and where it breaks
+
+Four more readers in `sub_18009FC70`'s sequence, all now disassembled.
+
+### sub_18009DDB0 — the name table
+
+Called with the record context. It reads one `u32` count, clamps it at 0x2710, then
+loops building a `zend_hash` with `zend_hash_init` / `zend_hash_str_add`. Each entry
+is **two** strings read by `sub_18000B8A0`: a name and a value. The hash is returned
+and held by the caller.
+
+This is the resolved-name table — the mechanism that lets a record refer to a
+function or class name by index instead of spelling it out.
+
+### sub_18009DD90 — sixteen bytes each
+
+```
+result = read_bytes(ctx, 16 * *(int *)(op_array + 92))
+*(op_array + 104) = result
+```
+
+`op_array+92` is payload `+0x3C`. That field is zero in all four records here, so
+this reader consumes nothing and `+104` stays null.
+
+### sub_18009E770 — the argument table
+
+`count = sub_18000C8D0(op_array)`, then `read_bytes(ctx, 20 * count)`. Each 20-byte
+entry is
+
+| offset | field |
+|---|---|
+| `+0` | `u32`, offset of the name string |
+| `+4` | `u32`, length of the name string |
+| `+8` | `u32`, offset of the default value |
+| `+12` | `u32`, length of the default value |
+| `+16` | `u8`, flags |
+| `+17` | `u8` |
+| `+18` | `u8` |
+| `+19` | `u8` |
+
+The two `(offset, length)` pairs go through `sub_1800A4C80`, and the results are
+stored in 24-byte runtime entries at `op_array+40`. If `+16` is set or a default
+value exists, `fn_flags |= 0x10000000`.
+
+### sub_18000B8A0 / sub_18000B930 — the string reader
+
+```
+word = u32
+if word < 0: empty
+length = word & 0xBFFFFFFF
+if word & 0x20000000 == 0: length += 1
+bytes = read_bytes(ctx, length)
+buffer[word & 0x9FFFFFFF] = 0
+```
+
+So bit 31 means null, bit 29 means "no terminator was stored", and the length is
+masked out of the low 30 bits. `sub_18000B930` is the same call with the length
+discarded.
+
+### The break
+
+`sub_18009ED60` reads `u32 opcodes; u32 words; 4*words; u32 aux; 5*aux`. It is
+called after the name table and the argument table, so its two counts should sit
+immediately before the word array at `+0x90`. They do not.
+
+Measured in all four records, `+0x84` is zero, `+0x88` is one small number and
+`+0x8C` is another:
+
+| record | `+0x88` | `+0x8C` | actual words in `+0x90..` |
+|---|---|---|---|
+| `binancepay_config` | 3 | 4 | 3 |
+| `binancepay_link` | 18 | 6 | 269 |
+| `call_bp_proxy` | 16 | 4 | 74 |
+| `bp_call_api` | 14 | 3 | 151 |
+
+Using `+0x8C` as the word count puts the aux array on top of the word stream and
+the rest of the walk explodes. It is not the word count.
+
+What the word array actually is, is settled: `call_bp_proxy` from `+0x130` to
+`+0x17C` is a run of words whose line fields climb `0xC2, 0xC3, 0xC4, 0xC5, 0xC6,
+0xC7` in order, and `bp_call_api` does the same with `0xE0` throughout. The array is
+the whole `+0x90..terminator` span, as M3.10 measured by size.
+
+So two of the counts `sub_18009ED60` reads are still unaccounted for. Either it runs
+earlier in the stream than its call site implies, or the reader the walker models is
+not the one used for these records. Unresolved, not guessed.
+
+`tools/ic72_record_layout.py` walks a record in this order and prints every span, so
+the disagreement is a number on screen rather than a theory. With `--header-args` it
+also skips `20 * header[0x14]` before the opcode section, which is what
+`sub_18009E770` does; without it the word array lands at `+0x90` for every record.
