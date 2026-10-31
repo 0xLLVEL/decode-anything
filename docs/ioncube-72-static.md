@@ -1820,3 +1820,57 @@ with a node of `i + 1`. `IS_CONST` operands do index the literal table, one base
 `config` op2 reads `CONST(1)` and resolves to `"configarray"`, `link` op2 reads
 `CONST(3)` and resolves to `"lng_languag"`. `tools/ic72_op_walk.py` now resolves
 `IS_CONST` nodes inline and leaves the rest as raw ordinals.
+
+## M3.17 The mask family is xorshift, but not a chain
+
+`sub_18009D040` is the assignment that turns a bare object into a reader: it
+stores `sub_18009D020` or `sub_18009D000` at `object + 24` depending on one flag.
+Those are the two pure 32 bit xorshift steps `sub_18009CA60` calls.
+
+The surrounding family, all recovered:
+
+| function | operation |
+|---|---|
+| `sub_18009CFF0` | `69069 * x + 1234567` |
+| `sub_18009D0D0` | `x = 69069 * x + 123`, `s = xorshift(s)`, `array[i] = x + s` |
+| `sub_18009D060` | the xorshift step applied `seed % 9` times |
+| `sub_18009D410` | 72 byte context, inner state `{4096, 4097, 1236789, 521288629, 362}` and five entry points |
+
+`sub_18009D0D0` is the array filler: count at `+0`, LCG seed at `+8`, xorshift
+state at `+12`, step function at `+24`, array at `+32`, and it writes
+`array[i] = lcg + xorshift` for `i < count`, with `xorshift` fed back through
+`+12` every round. Two independent streams summed.
+
+### Why the chain sweep fails anyway
+
+The natural reading is that `CA60` feeds the step function its own previous
+output, making the whole mask array a chain from one starting word. The receive
+run pins that start: in each record the first `args` opcodes are the same
+opcode, so their stored bytes XOR one value, giving
+`base_u32[0] = stored_le ^ opcode * 0x01010101`.
+
+`tools/ic72_mask_chain.py` sweeps all 198 opcodes for `binancepay_link`,
+`call_bp_proxy` and `bp_call_api` and requires every later opcode to stay inside
+`0..0xC5`. Survivors: **zero** in all three.
+
+A wider sweep is also zero: six step compositions (`a`, `b`, `aa`, `bb`, `ab`,
+`ba`), a seventh using `D060`'s xorshift, plus 0 to 3 pre-applications of the
+step and both byte orders - `0 / 0 / 0` survivors again.
+
+So the array is either fed from two streams at once, the way `D0D0` does it, or
+seeded per word from somewhere else. It is not one chain.
+
+### Three more negatives
+
+- not a static table: the pinned delta for `api` is `97 0B C4`; no four
+  consecutive bytes in the 995840 byte loader carry it
+- not payload plaintext (M3.16)
+- not keystream of the record or header keys (M3.16)
+
+### What this leaves
+
+`base` is built from `ops + 1` u32 values through a xorshift step into a byte
+array that is only ever read as its first `ops` bytes. The step is known. What is
+missing is the seed, and no file-local material tested so far produces it. Until
+the seed source is identified, the opcode byte stays masked and the operand half
+of every opcode remains the only trustworthy output.
