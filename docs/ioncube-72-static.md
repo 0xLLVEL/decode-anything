@@ -1,4 +1,4 @@
-# ionCube 7.2 — static decode status and plan
+﻿# ionCube 7.2 — static decode status and plan
 
 Target: turn `engines/ioncube` into a static 7.2 decompiler (no PHP runtime, no opcode-dump DLL).
 Current 7.x path is runtime-only (`engines/ioncube/runtime_dump.py`); `dumper.SUPPORTED_BODY_LAYOUTS` stops at 81–84.
@@ -1652,3 +1652,113 @@ every record, and the fixed `0xFFFFFFFF` word that closes the array is itself th
 last opcode slot. So either the escape rule needs the sentinel carved out, or the
 last opcode has no operands and carries the terminator. Both readings are
 consistent with the byte counts; nothing yet separates them.
+
+## M3.15 The class byte is a flag byte, and the walk closes
+
+M3.14 left the word walk one group short in every record. The missing piece was
+in the escape test itself: `class & 0x18` is truthy for `0x0F`, and `0x0F` is not
+an escape. The loader tests the pair, not either bit.
+
+`sub_18009E9E0` takes the word's low sixteen bits, masks `0x1800`, and switches:
+
+| flags | stored at `+20` |
+|---|---|
+| `0x0000` | `0` |
+| `0x0800` | `1` |
+| `0x1000` | `60` |
+| `0x1800` | the next word |
+
+`sub_18009EA30` takes the same low sixteen bits: `flags & 0x800` stores line `0`,
+otherwise the line is `word >> 16`, and a line of `0xFFFF` consumes one more word.
+
+Both masks sit on bits 8..12 of the word, so **the second byte is the flag byte**
+and the third and fourth are the line. The class values the loader computes map
+straight onto the second byte's bits 3 and 4. The full byte:
+
+| bit | mask | meaning |
+|---|---|---|
+| 0 | `0x01` | operand 1 present, five aux bytes, type to `+31`, node to `+16` |
+| 1 | `0x02` | operand 2 present, type to `+29`, node to `+8` |
+| 2 | `0x04` | result present, type to `+30`, node to `+12` |
+| 3 | `0x08` | line suppressed, stored as `0` |
+| 4 | `0x10` | class selector, paired with bit 3 |
+
+Bits 3 and 4 together mean the class is the next word. Bits 0..2 are always set
+in this sample, which is why every opcode carries exactly three aux entries and
+the array is consumed at fifteen bytes per opcode, never less.
+
+### The walk, byte exact
+
+`tools/ic72_op_walk.py`, escape test `(class & 0x18) == 0x18`, stop at `cells`:
+
+| record | ops | cells | walked | word cursor | aux bytes |
+|---|---|---|---|---|---|
+| config | 3 | 4 | 3 | 4 | 45 |
+| link | 234 | 265 | 234 | 265 | 3510 |
+| proxy | 49 | 65 | 49 | 65 | 735 |
+| api | 111 | 132 | 111 | 132 | 1665 |
+
+All four land on `ops` opcodes, on `cells` words, and on `15 * ops` aux bytes. No
+spec table is needed for widths. The fixed `0xFFFFFFFF` word is not an opcode; it
+is the extension word of the final opcode, which is why `cells = ops + escapes`
+counts it.
+
+### The operands agree with the argument table
+
+The first opcodes of each record read `op1 = IS_CV`, one per declared argument:
+
+| record | arguments | first opcodes |
+|---|---|---|
+| config | 0 | none |
+| link | 1 | `CV(0)` |
+| proxy | 2 | `CV(0)`, `CV(1)` |
+| api | 4 | `CV(0)`, `CV(1)`, `CV(2)`, `CV(3)` |
+
+That is the receive sequence for the declared parameters, counted exactly. The
+operand half of the decode is therefore correct, independently of the opcode
+names.
+
+### The mask, in assembly
+
+`sub_18009E8B0` at `0x18009E8B0`:
+
+```
+mov  byte ptr [rcx+0x1c], r8b     ; store the opcode byte first
+test r9b, r9b
+jns  0x18009E909                  ; flags non-negative -> return the byte raw
+...
+movzx eax, byte ptr [r10+rdx]     ; base[index]
+xor   al, byte ptr [rcx+0x1c]     ; opcode ^ base[index]
+```
+
+`r10` is the opcode index, `rdx` is the base pointer, so the mask is exactly
+`stored ^ base[index]`, one byte per opcode. `0x95` is special: the loader zeroes
+`base[index]` and returns the stored byte unchanged, but only when the version
+field at `context + 16` is at least 3.
+
+`base` is `op_array + 64`. Two writers:
+
+- `sub_18009E240` stores a sign-extended header dword from `payload + 0x28`
+- `sub_18009FA20` stores `malloc(4 * (ops + 1))` filled by `sub_18009CA60` from a
+  reader at `context + 40`, gated on the compiler flags having `0x2C80`
+
+In this sample `payload + 0x28` is `0x5B28B120`, `0x5B2D0000`, `0x5BA4B200`,
+`0x5B2D5000` - encoder address-space values, not pointers here. So the base array
+must come from the builder, not from that field. `sub_18009CA60` reads four bytes
+through the reader and hands them to `sub_18009C9E0`, which XORs a keystream byte
+in when `reader + 48` is set. The base array is therefore cipher material, not
+plaintext in the payload.
+
+### Where the mask falls out
+
+The stored byte for the first receive opcode of each record:
+
+| record | stored | count |
+|---|---|---|
+| link | `0xA0` | 1 |
+| proxy | `0xF2`, `0x4B` | 2 |
+| api | `0x3F`, `0xA8`, `0x34`, `0xFB` | 4 |
+
+Those seven stored bytes must all decode to the same opcode, which pins seven key
+bytes at once. Under the cipher hypothesis the key sequence is keystream output,
+so the seven keys can be checked against the generator instead of searched.
