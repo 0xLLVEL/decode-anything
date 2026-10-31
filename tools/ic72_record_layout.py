@@ -1,21 +1,26 @@
-"""Split a 7.2 function record into its sections and print every span.
+"""Partition a 7.2 function record and resolve every string it names.
 
-The record is a byte stream read front to back.  Every section boundary below is
-an offset that can be checked, not an inference:
+Byte stream, front to back:
 
-    0x00   112   header
-    0x70   4     copied to op_array+24
-    0x74   16    name entry, [u32 u32 u32 u32] with a zend string header
-    0x84   4     name-table count for sub_18009DDB0 (zero in every record here)
-    0x88   20*n  argument table, n from sub_18000C8D0; entry is two
-                 (offset, length) string refs plus four flag bytes
-    ?      8     opcode-section header: [payload[0x24], cell count]
-    ?      4*cells  the word array, one cell per operand slot, closed by a
-                 0xFFFFFFFF cell that the header's count includes
+    0x0000  112       header
+    0x0070    4       copied to op_array+24
+    0x0074   16       name entry: [refcount, type, offset, length], offset into the pool
+    0x0084    4       name-table count for sub_18009DDB0
+    0x0088   20*n     argument table, n from sub_18000C8D0
+    ?         8       op header: [ops, cells]
+    ?      4*cells    word array, closed by a 0xFFFFFFFF cell
+    ?         4       aux entry count, always 3 * ops
+    ?       5*count   aux array, 15 bytes per opcode
+    ?      16*lits    literal table, entries shaped like the name entry
+    ?      12*consts  constant pool
+    ?         4       unused head of the tail
+    ?         4       pool size in bytes
+    ?       size      string pool, every offset in this record indexes into it
+    ?     16*args2    trailing table keyed by header[0x58]
 
-The cell count is the load-bearing number: the dword immediately before the
-array equals (cells), and the array begins at 0x88 + 20*args + 8 and ends one
-cell past the 0xFFFFFFFF terminator.  All four records close exactly.
+The pool is the anchor: the name entry and every literal entry carry
+(offset, length) pairs that resolve against it, so a wrong offset anywhere above
+shows up as garbage text rather than as a plausible number.
 
     python tools/ic72_record_layout.py <body> [--record N]
 """
@@ -33,60 +38,52 @@ ENTRY = 20
 TERMINATOR = 0xFFFFFFFF
 
 
-def arg_count_from_header(header: tuple[int, ...]) -> int:
-    """sub_18000C8D0. Argument count, plus the receiver slots fn_flags asks for."""
-    return header[0x14 // 4]
-
-
 def layout(payload: bytes, name: str, flags: int) -> None:
     header = struct.unpack_from("<28I", payload, 0)
-    args = arg_count_from_header(header)
+    args = header[0x14 // 4]
     literals = header[0x2C // 4]
     constants = header[0x38 // 4]
 
-    arg_at = PREFIX_END
-    head_at = arg_at + ENTRY * args
+    head_at = PREFIX_END + ENTRY * args
+    ops, cells = struct.unpack_from("<2I", payload, head_at)
     array_at = head_at + 8
-
-    if array_at + 8 > len(payload):
-        print("== %s  OVERRUN: array would start at %#x" % (name, array_at))
-        return
-
-    image = struct.unpack_from("<2I", payload, head_at)
-    cells = image[1]
-    word_cells = cells - 1
-
     end_at = array_at + 4 * cells
-    term_at = end_at - 4
-    terminator = struct.unpack_from("<I", payload, term_at)[0] if term_at + 4 <= len(payload) else None
-    closes = terminator == TERMINATOR
+    term = struct.unpack_from("<I", payload, end_at - 4)[0]
+
+    aux_count = struct.unpack_from("<I", payload, end_at)[0]
+    lit_at = end_at + 4 + 5 * aux_count
+    const_at = lit_at + 16 * literals
+    tail_at = const_at + 12 * constants
+    pool_at = tail_at + 8
+    pool_size = struct.unpack_from("<I", payload, tail_at + 4)[0]
 
     print("== %s  desc=0x%08x" % (name, flags))
-    words = [struct.unpack_from("<I", payload, array_at + 4 * k)[0] for k in range(max(0, word_cells))]
-    escapes = sum(1 for w in words if ((w >> 8) & 0xFF) == 0x1F or ((w >> 16) & 0xFFFF) == 0xFFFF)
-    slots = cells - escapes
+    print("   arg table   0x%04x  %d x %d" % (PREFIX_END, args, ENTRY))
+    print("   op header   0x%04x  ops=%d cells=%d (escapes=%d)" % (head_at, ops, cells, cells - ops))
+    print("   word array  0x%04x  %s" % (array_at, "closes" if term == TERMINATOR else "TERMINATOR %#010x" % term))
+    print("   aux array   0x%04x  %d entries = 3 * ops: %s, %d bytes"
+          % (end_at + 4, aux_count, aux_count == 3 * ops, 5 * aux_count))
+    print("   literals    0x%04x  %d" % (lit_at, literals))
+    print("   constants   0x%04x  %d" % (const_at, constants))
+    print("   pool        0x%04x  %d bytes, %d trailing" % (pool_at, pool_size, len(payload) - pool_at - pool_size))
 
-    print("   header          0x0000  112")
-    print("   op_array+24     0x0070  4")
-    print("   name entry      0x0074  16")
-    print("   name count      0x0084  %d" % struct.unpack_from("<I", payload, 0x84)[0])
-    print("   arg table       0x%04x  %d x %d = %d" % (arg_at, args, ENTRY, ENTRY * args))
-    print("   op header       0x%04x  slots=%d cells=%d  %s"
-          % (head_at, image[0], image[1],
-             "consistent" if image[0] == slots else "h24 %d != cells-escapes %d" % (image[0], slots)))
-    print("   word array      0x%04x  %d cells (%d words + terminator), %d escapes"
-          % (array_at, cells, word_cells, escapes))
-    print("   terminator      0x%04x  %s" % (term_at, "0xFFFFFFFF" if closes else "%#010x BAD" % terminator))
-    print("   literals=%d constpool=%d" % (literals, constants))
+    def text(offset: int, length: int) -> bytes:
+        return payload[pool_at + offset:pool_at + offset + length]
 
-    if not closes:
-        return
+    entry = struct.unpack_from("<4I", payload, 0x74)
+    print("   name        refcount=%d type=%d %r" % (entry[0], entry[1], text(entry[2], entry[3])))
 
-    table_at = end_at + 4
-    if table_at + 4 <= len(payload):
-        size = struct.unpack_from("<I", payload, end_at)[0]
-        print("   slot table      0x%04x  u32 size=%d == 3*%d: %s, then %d trailing bytes"
-              % (end_at, size, image[0], size == 3 * image[0], len(payload) - table_at - size))
+    good = 0
+    for index in range(literals):
+        refcount, kind, offset, length = struct.unpack_from("<4I", payload, lit_at + 16 * index)
+        body = text(offset, length)
+        printable = bool(body) and all(32 <= byte < 127 for byte in body)
+        good += printable
+        if index < 8:
+            print("     lit[%2d] %d/%d off=%-5d len=%-4d %r%s"
+                  % (index, refcount, kind, offset, length, body, "" if printable else "  NON-TEXT"))
+    if literals:
+        print("   literals resolve %d/%d" % (good, literals))
 
 
 def main() -> int:

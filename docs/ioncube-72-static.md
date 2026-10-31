@@ -1506,3 +1506,85 @@ candidate for the opcode count, and it is consistent with the minimum-width rule
 the opcode byte is still XOR-masked per slot.
 
 `tools/ic72_record_layout.py` prints this map and checks all three invariants.
+
+## M3.13 The record closes, and the string pool proves it
+
+M3.12 read the dword after the word array as a table size of `3 * slots` and
+looked for a three-byte-per-slot table. It is not that. It is the **aux entry
+count** that `sub_18009ED60` reads, each entry is five bytes, and the count is
+three times the opcode count because every opcode carries three operand entries:
+op1, op2 and result. Fifteen bytes per opcode.
+
+That makes the section map complete, and the string pool at the end is the
+proof rather than an inference: the name entry and every literal entry hold
+`(offset, length)` pairs, all relative to the pool, so a wrong offset anywhere
+above resolves to garbage text instead of a plausible number.
+
+### The map
+
+```
+0x0000  112       header
+0x0070    4       copied to op_array+24
+0x0074   16       name entry: [refcount, type, offset, length]
+0x0084    4       name-table count for sub_18009DDB0
+0x0088   20*n     argument table
+?         8       op header: [ops, cells]
+?      4*cells    word array, closed by a 0xFFFFFFFF cell
+?         4       aux count, always 3 * ops
+?       5*count   aux array, 15 bytes per opcode
+?      16*lits    literal table, entries shaped exactly like the name entry
+?      12*consts  constant pool
+?         4       unused
+?         4       pool size
+?       size      string pool
+?     16*args2    trailing table keyed by header[0x58]
+```
+
+| record | args | op header | ops | cells | escapes | aux | literals | consts | pool |
+|---|---|---|---|---|---|---|---|---|---|
+| `binancepay_config` | 0 | `0x88` | 3 | 4 | 1 | 9 | 1 | 0 | `0xE9` |
+| `binancepay_link` | 1 | `0x9C` | 234 | 265 | 31 | 702 | 17 | 11 | `0x141E` |
+| `call_bp_proxy` | 2 | `0xB0` | 49 | 65 | 16 | 147 | 4 | 5 | `0x523` |
+| `bp_call_api` | 4 | `0xD8` | 111 | 132 | 21 | 333 | 14 | 6 | `0xAA5` |
+
+`cells = ops + escapes` in every record, and `aux = 3 * ops` in every record.
+
+### Entry shape
+
+Both the name entry and every literal entry are the same sixteen bytes:
+
+```
+u32 refcount   1
+u32 type       6, IS_STRING
+u32 offset     into the pool
+u32 length
+```
+
+The name entry at `+0x74` and literal table entries are therefore the same
+structure, and the pool starts with a two-byte prefix before the first string —
+the name sits at offset 2 in all four records.
+
+### Resolution
+
+All thirty-six literals across the four records resolve to printable ASCII, and
+they name exactly what the functions touch:
+
+- `binancepay_config`: `configarray`
+- `binancepay_link`: `params`, `config`, `lng_languag`, `licinfo`, `paybp`,
+  `bppaymentsuccess`, `entityBody`, `LICENSE`
+- `call_bp_proxy`: `data`, `token`, `curl`, `response`
+- `bp_call_api`: `url`, `data`, `api_key`, `secret_key`, `_entityBody`,
+  `length`, `headers`, `x`
+
+That is a check no wrong offset survives. If the arg table, op header, word
+array, aux array or literal table were mis-sized by even four bytes, these
+strings would be rubble.
+
+### Correction to M3.12
+
+`ops` is `payload[0x24]` — 3, 234, 49 and 111 — and it is written twice, once in
+the header and once in the op header. `desc[1]` (1, 128, 22, 54) is **not** the
+opcode count. M3.12's claim that it was the best candidate is withdrawn.
+
+`tools/ic72_record_layout.py` now prints the full partition and resolves every
+literal against the pool.
