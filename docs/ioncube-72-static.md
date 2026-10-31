@@ -1444,3 +1444,65 @@ not the one used for these records. Unresolved, not guessed.
 the disagreement is a number on screen rather than a theory. With `--header-args` it
 also skips `20 * header[0x14]` before the opcode section, which is what
 `sub_18009E770` does; without it the word array lands at `+0x90` for every record.
+
+## M3.12 The record is fully partitioned, and the counts were in the op header
+
+M3.11 recorded a negative: the two `u32` at `+0x88`/`+0x8C` are not the word
+count, because using them as such lands the aux array on top of the word stream.
+The reason was the offset. Those two words are not a header at all in the larger
+records — they are the first eight bytes of the argument table. The op header is
+somewhere else, and once it is placed correctly the whole record closes.
+
+### The map
+
+```
+0x0000  112       header
+0x0070    4       copied to op_array+24
+0x0074   16       name entry, a zend string header plus two u32
+0x0084    4       name-table count for sub_18009DDB0
+0x0088   20*n     argument table, n from sub_18000C8D0
+?         8       op header: [ slots, cells ]
+?      4*cells    word array, closed by a 0xFFFFFFFF cell
+?         4       slot-table byte size, always 3 * slots
+?        3*slots  slot table
+```
+
+Measured:
+
+| record | args | op header | cells | escapes | slots | terminator | slot table |
+|---|---|---|---|---|---|---|---|
+| `binancepay_config` | 0 | `0x88` | 4 | 1 | 3 | `0x9C` | 9 |
+| `binancepay_link` | 1 | `0x9C` | 265 | 31 | 234 | `0x4C4` | 702 |
+| `call_bp_proxy` | 2 | `0xB0` | 65 | 16 | 49 | `0x1B8` | 147 |
+| `bp_call_api` | 4 | `0xD8` | 132 | 21 | 111 | `0x2EC` | 333 |
+
+Four for four on three independent checks:
+
+- the word array begins at `0x88 + 20*args + 8`
+- the cell at the end of `4*cells` bytes is `0xFFFFFFFF` in every record
+- the `u32` field that follows is exactly `3 * slots` in bytes
+
+### What the two header words are
+
+`cells` counts the terminator. `slots = cells - escapes`, where an escape is a
+cell whose class byte is `0x1F` or whose line field is `0xFFFF`; those cells
+extend the preceding slot instead of starting one. The header's first word is
+the slot count and equals `payload[0x24]` in every record, so the same number is
+written twice and the two copies agree.
+
+The slot table is three bytes per slot, so a slot that carries more than one
+operand still gets one entry. That is the first measurement that ties the number
+of `zend_op` structures `sub_18009F1B0` allocates to the file: it uses
+`cells` and asserts the expanded count against the header, while the slots are
+what the table is indexed by.
+
+### Consequence for the opcode count
+
+`desc[1]` (1, 128, 22, 54) is not the cell count and not the slot count. Against
+the slots it gives 1.0, 1.8, 2.2 and 2.1 slots per instruction, which is the
+range of one, two and three operand instructions — so `desc[1]` remains the best
+candidate for the opcode count, and it is consistent with the minimum-width rule
+(`2 * ops <= cells - 1` holds for all four). Not proven by closure yet, because
+the opcode byte is still XOR-masked per slot.
+
+`tools/ic72_record_layout.py` prints this map and checks all three invariants.

@@ -1,19 +1,21 @@
-"""Walk a 7.2 function record in the loader's own read order.
+"""Split a 7.2 function record into its sections and print every span.
 
-The order is fixed by sub_18009FC70, which calls, in sequence:
+The record is a byte stream read front to back.  Every section boundary below is
+an offset that can be checked, not an inference:
 
-    sub_18009E240  112-byte header, then u32, then the name entry (16 bytes)
-    sub_18009DDB0  class/constant name table: u32 count, then count pairs of strings
-    sub_18009DD90  16 * header[0x3c] bytes
-    sub_18009E770  20 * argcount bytes
-    sub_18009ED60  u32 opcodes, u32 words, 4*words, u32 aux, 5*aux
-    sub_18009DF10  16 * header[0x2c] bytes, the literal table
-    sub_18009E110  12 * header[0x38] bytes, the constant pool
-    reader          u32, u32, then a blob of the second u32's length
-    sub_18009F710  16 * header[0x58] bytes
+    0x00   112   header
+    0x70   4     copied to op_array+24
+    0x74   16    name entry, [u32 u32 u32 u32] with a zend string header
+    0x84   4     name-table count for sub_18009DDB0 (zero in every record here)
+    0x88   20*n  argument table, n from sub_18000C8D0; entry is two
+                 (offset, length) string refs plus four flag bytes
+    ?      8     opcode-section header: [payload[0x24], cell count]
+    ?      4*cells  the word array, one cell per operand slot, closed by a
+                 0xFFFFFFFF cell that the header's count includes
 
-Each span is printed with its offset so a disagreement with the known word array
-shows up as a number rather than as a theory.
+The cell count is the load-bearing number: the dword immediately before the
+array equals (cells), and the array begins at 0x88 + 20*args + 8 and ends one
+cell past the 0xFFFFFFFF terminator.  All four records close exactly.
 
     python tools/ic72_record_layout.py <body> [--record N]
 """
@@ -26,90 +28,71 @@ from pathlib import Path
 
 from ic72_record_walk import resync
 
-
-class Cursor:
-    def __init__(self, payload: bytes):
-        self.data = payload
-        self.at = 0
-
-    def u32(self, label: str):
-        value = struct.unpack_from("<I", self.data, self.at)[0]
-        print("  %-22s %#06x  %d" % (label, self.at - 4, value))
-        return value
-
-    def skip(self, count: int, label: str):
-        start = self.at
-        self.at += count
-        if count:
-            print("  %-22s %#06x  %d bytes" % (label, start, count))
-        return start
-
-    def take_u32(self, label: str):
-        start = self.at
-        if start + 4 > len(self.data):
-            print("  %-22s %#06x  OVERRUN" % (label, start))
-            raise SystemExit(0)
-        self.at += 4
-        value = struct.unpack_from("<I", self.data, start)[0]
-        print("  %-22s %#06x  %d" % (label, start, value))
-        return value
-
-    def string(self, label: str):
-        word = self.take_u32(label + " len")
-        if word & 0x80000000:
-            return
-        length = word & 0xBFFFFFFF
-        if not word & 0x20000000:
-            length += 1
-        self.skip(length, label + " bytes")
+PREFIX_END = 0x88
+ENTRY = 20
+TERMINATOR = 0xFFFFFFFF
 
 
-def walk(payload: bytes, name: str, use_header_args: bool = False) -> None:
+def arg_count_from_header(header: tuple[int, ...]) -> int:
+    """sub_18000C8D0. Argument count, plus the receiver slots fn_flags asks for."""
+    return header[0x14 // 4]
+
+
+def layout(payload: bytes, name: str, flags: int) -> None:
     header = struct.unpack_from("<28I", payload, 0)
-    args, literals = header[5], header[0x2C // 4]
-    constants, extra = header[0x38 // 4], header[0x3C // 4]
-    line_lo, argtab = header[0x50 // 4], header[0x58 // 4]
+    args = arg_count_from_header(header)
+    literals = header[0x2C // 4]
+    constants = header[0x38 // 4]
 
-    print("== %s  args=%d literals=%d constpool=%d extra=%d line_lo=%d argtab=%d"
-          % (name, args, literals, constants, extra, line_lo, argtab))
+    arg_at = PREFIX_END
+    head_at = arg_at + ENTRY * args
+    array_at = head_at + 8
 
-    cur = Cursor(payload)
-    cur.skip(112, "header")
-    cur.take_u32("op_array+24")
-    cur.skip(16, "name entry")
+    if array_at + 8 > len(payload):
+        print("== %s  OVERRUN: array would start at %#x" % (name, array_at))
+        return
 
-    count = cur.take_u32("name table count")
-    for index in range(min(count, 64)):
-        cur.string("  name[%d]" % index)
-        cur.string("  value[%d]" % index)
+    image = struct.unpack_from("<2I", payload, head_at)
+    cells = image[1]
+    word_cells = cells - 1
 
-    cur.skip(16 * extra, "extra table")
-    cur.skip(20 * args if use_header_args else 0, "arg table")
+    end_at = array_at + 4 * cells
+    term_at = end_at - 4
+    terminator = struct.unpack_from("<I", payload, term_at)[0] if term_at + 4 <= len(payload) else None
+    closes = terminator == TERMINATOR
 
-    opcodes = cur.take_u32("opcode count")
-    words = cur.take_u32("word count")
-    word_at = cur.skip(4 * words, "word array")
-    aux = cur.take_u32("aux count")
-    cur.skip(5 * aux, "aux array")
+    print("== %s  desc=0x%08x" % (name, flags))
+    words = [struct.unpack_from("<I", payload, array_at + 4 * k)[0] for k in range(max(0, word_cells))]
+    escapes = sum(1 for w in words if ((w >> 8) & 0xFF) == 0x1F or ((w >> 16) & 0xFFFF) == 0xFFFF)
+    slots = cells - escapes
 
-    cur.skip(16 * literals, "literal table")
-    cur.skip(12 * constants, "const pool")
-    cur.take_u32("field A")
-    size = cur.take_u32("blob size")
-    cur.skip(size, "blob")
-    cur.skip(16 * argtab, "trailing table")
+    print("   header          0x0000  112")
+    print("   op_array+24     0x0070  4")
+    print("   name entry      0x0074  16")
+    print("   name count      0x0084  %d" % struct.unpack_from("<I", payload, 0x84)[0])
+    print("   arg table       0x%04x  %d x %d = %d" % (arg_at, args, ENTRY, ENTRY * args))
+    print("   op header       0x%04x  slots=%d cells=%d  %s"
+          % (head_at, image[0], image[1],
+             "consistent" if image[0] == slots else "h24 %d != cells-escapes %d" % (image[0], slots)))
+    print("   word array      0x%04x  %d cells (%d words + terminator), %d escapes"
+          % (array_at, cells, word_cells, escapes))
+    print("   terminator      0x%04x  %s" % (term_at, "0xFFFFFFFF" if closes else "%#010x BAD" % terminator))
+    print("   literals=%d constpool=%d" % (literals, constants))
 
-    print("  %-22s %#06x  end" % ("", cur.at))
-    print("  %-22s %#06x  word array start" % ("", word_at))
-    print("  %-22s %d / %d" % ("stream counts", opcodes, words))
+    if not closes:
+        return
+
+    table_at = end_at + 4
+    if table_at + 4 <= len(payload):
+        size = struct.unpack_from("<I", payload, end_at)[0]
+        print("   slot table      0x%04x  u32 size=%d == 3*%d: %s, then %d trailing bytes"
+              % (end_at, size, image[0], size == 3 * image[0], len(payload) - table_at - size))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("body")
     ap.add_argument("--record", type=int)
-    ap.add_argument("--header-args", action="store_true",
-                    help="skip 20 bytes per header-level argument count")
     args = ap.parse_args()
 
     body = Path(args.body).read_bytes()
@@ -119,7 +102,7 @@ def main() -> int:
         if args.record is not None and index != args.record:
             continue
         payload = body[rec.payload_offset:rec.payload_offset + rec.payload_size]
-        walk(payload, rec.name, args.header_args)
+        layout(payload, rec.name, struct.unpack_from("<I", rec.descriptor, 4)[0])
     return 0
 
 
