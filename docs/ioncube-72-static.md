@@ -505,3 +505,79 @@ The blob opens with a 616-byte block at `+0x54` and lands on the record area at
 identifier literals are visible in the first pass, so the remaining work is the
 sv5 record walker - `OpArrayMetadata`, opcode blocks, and the `0x00364730`
 bytecode XOR - not the envelope.
+
+## M3.1 - what the sv5 record area actually holds
+
+The record layer is not opaque, it is just not the 8.x layout. Walking the 7.2
+loader rather than guessing gives the read order, and the body then reads as a
+sequence of records whose names and literal pools are in the clear.
+
+### Op_array head read order (sub_1800A0090, called from sub_1800A02A0)
+
+`sub_1800A02A0` picks the branch from `php_flags & 0x8000` (dynamic keys) and,
+when set, reads `u32 length`, two `u32` key words, then calls `sub_1800A0090`.
+The head reads, in this order:
+
+```
+u16 name_len, name_len+1 bytes        -> op_array+8 / op_array+0x10 (sub_18009FFC0)
+0x14 raw bytes                        -> descriptor handed to sub_180002560
+u32                                   -> op_array+0x20
+u32                                   -> op_array+0x24
+u32 fn_flags (&~0x800)                -> op_array+4
+sub_18009E500                         -> arg table
+sub_18009E880                         -> reference-return fixup
+u32 literal_count                     -> op_array+0x48
+literals                              -> sub_18009DFE0: name string + 8-byte key each
+u32 num_args                          -> op_array+0x18
+u8 construct flag
+u32 filename ref (0xFFFFFFFF = none)
+```
+
+`sub_18000B830` is the shared length-word reader: value `& ~0x20000000`, plus
+one byte when bit 29 is clear. `sub_18009D610` is a two-instruction wrapper,
+`mov edx, 14h` then `jmp sub_18000B830` - the 20-byte descriptor above.
+
+### The 616-byte buffer is a stored blob, not the metadata
+
+`sub_1800A02A0` finishes with `sub_18000B830(stream, length)`, then
+`sub_18009D630(op_array, buffer, count)`. That function only stores the pointer
+and length (`+64`, `+72`), so the buffer is carried into execution untouched.
+Treating those bytes as 8.x op_array metadata is what made the checksum gate
+fail earlier; the metadata lives on the stream, not in the blob.
+
+Negative results for the blob, each tried and rejected on the sample:
+
+| transform | result |
+|---|---|
+| raw DEFLATE at offsets 0..20 | no valid stream |
+| chunk/escape decoder (`decode_escaped_block`) | not chunked |
+| `decrypt_cipher0` with request/owner/body-seed keys | no structure |
+| dword XOR with `PRNG6(outer keys)` (+-`request_key`) | no structure |
+| reads as 8.x `read_inner_op_array_record` | metadata checksum mismatch |
+
+### What is readable
+
+Identifier names are `u32 length + bytes + NUL`, and literal pools use the same
+compact zval grammar the 8.x reader already handles. On `binancepay_asli.php`
+the pool at `0x457` decodes to the DHRU plugin configuration array:
+
+```
+{"name": {"Type": "System", "Value": "Binance Pay (https://merchant.binance.com/)"},
+ "api_key": {"Name": "API Key", "Type": "text", "Size": "120", ...},
+ "secret_key": {...}, "merchant_id": {...}, "proxy": {...}}
+```
+
+Name records mark the record groups: the main op_array variables
+(`params`, `config`, `lng_languag`, `licinfo`, `bppaymentsuccess`,
+`entityBody`, `LICENSE`, `_res_proxy`, ...) from `0x9C8`, then per-function
+tables for `call_bp_proxy` (`0x3A45`) and `bp_call_api` (`0x4B22`), each with
+its own `url` / `data` / `api_key` / `secret_key` locals.
+
+```
+python tools/ic72_body_scan.py body72.bin
+python tools/ic72_body_scan.py body72.bin --json
+```
+
+The open work is unchanged in kind but now bounded: the record walker has to
+reproduce the read order above, and the opcode lane has to be derived from the
+buffer `sub_18009D630` stores.
