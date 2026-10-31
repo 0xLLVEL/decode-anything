@@ -821,3 +821,72 @@ to pick the table that matches this file's encoder version (12.0.2) before any
 opcode stream can be decoded. That is the next milestone, and it is the only
 step between the current state and PHP output: the record layer, the literal
 tables, the argument lists and the opcode counts are all known.
+
+## M3.5 - inside a data segment
+
+The segment a record carries is not opaque bytes: it is a dword header
+followed by the literal pool and a packed instruction sub-area. The header is
+verifiable against the record fields the walker already produces, which is how
+the map below is pinned rather than guessed.
+
+| offset | meaning | config | link | proxy | api |
+| --- | --- | --- | --- | --- | --- |
+| `+00` | magic `0x5bdfac02` | ok | ok | ok | ok |
+| `+04` | `fn_flags` | `0x08000000` | same | same | same |
+| `+14` | argument count | 0 | 1 | 2 | 4 |
+| `+18` | argument count, second copy | 0 | 1 | 2 | 4 |
+| `+2c` | literal count | 1 | 17 | 4 | 14 |
+| `+30` | opcode count | 1 | 128 | 22 | 54 |
+| `+50` | packed sub-area offset | 5 | 36 | 184 | 209 |
+| `+60` | packed sub-area size | 2 | 158 | 56 | 88 |
+
+Five independent cross-checks per segment: the magic, `fn_flags` against
+record `fn_flags`, the argument count against the parsed argument table, the
+literal count against the literal table length, and the opcode count against
+the descriptor's second dword. All five agree on all four function segments.
+
+The file-level segment fails every one of them - its first dword reads
+`0x7dd785f8`, not the magic - which is the same conclusion M3.2 and M3.4
+reached from entropy: that segment is the one produced with the runtime
+license key and is not a readable image.
+
+### The packed sub-area
+
+For `call_bp_proxy`, `+50` is `184`, and the bytes at `184` are exactly where
+packed four-byte tokens start:
+
+```
+00b8  f2 07 b8 00 4b 07 b8 00 8a 07 ba 00 0d 07 ba 00
+00c8  65 07 ba 00 98 1f bb 00 02 00 00 00 6d 07 bb 00
+00d8  31 1f bc 00 10 00 00 00 dc 1f bc 00 28 00 00 00
+00e8  f9 1f bd 00 10 00 00 00 9f 07 bc 00 25 1f be 00
+```
+
+Two token shapes alternate: `xx 07 yy 00` and `xx 1f yy 00`, where `xx` is a
+payload byte value, `yy` climbs monotonically (`b8`, `b8`, `ba`, `ba`, `ba`,
+`bb`, ...) and a bare little-endian operand (`02`, `10`, `28`) is spliced in
+between them. The climbing byte is a cursor into the segment, so the tokens
+are a delta-coded stream over the payload rather than an instruction array.
+The four larger segments end in a table of `(u32 offset, 0xFFFFFFFF)` pairs,
+which is the jump/label table for the same stream.
+
+The same field is not the stream start on the other segments - `link` reports
+`36` and lands inside a nested descriptor block - so the offset is a
+sub-area pointer, not a fixed "instruction area begins here" field. That is
+the open question the interpreter will answer, and it is the reason the
+segment image below stops at "the payload is structured and its metadata is
+exact" rather than claiming an instruction decode.
+
+### Addresses inside the segment
+
+Every remaining dword is either zero or a `0x5b......` value. The same word
+`0x5b3b0f60` appears at `+4c` in all four segments, and the words at `+08`
+climb with the record order (`0x5b28c0c0`, `0x5b2a3820`, `0x5b2d2320`,
+`0x5b2d25f0`). They are the encoder's own address space carried along so the
+loader can relocate them, not offsets into the segment.
+
+```bash
+python tools/ic72_payload72.py body72.bin --resync
+python tools/ic72_payload72.py body72.bin --resync --name call_bp_proxy --dump-instr 96
+python tools/ic72_payload72.py body72.bin --resync --index 4 --strings 20
+```
