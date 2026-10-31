@@ -1146,3 +1146,97 @@ with a following immediate looks like an operand carrying a payload, and the
 `0x0f` tokens form a minority (12/234, 3/49, 9/111) that may mark the slot that
 closes a record. `tools/ic72_tokens.py` dumps the stream in order for testing
 that against the next candidate rule.
+
+## M3.9 The record builder chain
+
+`sub_18009FC70` is the function that turns a payload record into an op_array.
+It is reached from `sub_1800A0620`, which the record dispatcher installs as the
+callback at `op_array+32`. Read order inside it, with the reader at `ctx+168`
+called directly:
+
+```
+sub_18009E240  reads exactly 112 bytes in one call -> the function header
+sub_18009DDB0
+sub_18009DD90
+sub_18009E770
+sub_18009ED60
+sub_18009DF10  16 * literal_count bytes -> the literal table
+sub_18009E110
+reader(ctx, &dword, 4)
+reader(ctx, &dword, 4)
+reader(ctx, dword)            -> a separate blob, freed after sub_18009F710
+sub_18009F710  argument table
+sub_18009FA20, sub_18009F1B0  finalise, then the temp op_array is emitted
+```
+
+That is the whole file-to-op_array path. It also settles a framing question from
+M3.6: nothing in this chain ever reads `32 * opcode_count`. The 32-byte record
+described from `sub_18002B670` is the VM's own in-memory form, not a structure
+present in the payload, which is why every stride search over the payload failed.
+
+### The 112-byte header
+
+`sub_18009E240` performs one 112-byte read and then assigns fields to the
+op_array by fixed offset. The mapping, loader-side:
+
+| payload | op_array | note |
+|---|---|---|
+| `+00..+03` | `+00..+03` | four bytes copied individually |
+| `+04` | `+04` | |
+| `+08` | `+08` | non-zero gates reading the name entry |
+| `+0C` | `+10` | |
+| `+10` | `+18` | |
+| `+14` | `+20` | argument count, matches the descriptor |
+| `+18` | `+24` | argument count, again |
+| `+1C` | `+28` | |
+| `+20` | `+30` | |
+| `+24` | `+38` | |
+| `+28` | `+40` | |
+| `+2C` | `+48` | literal count, proven three ways |
+| `+30` | `+4C` | opcode count, proven three ways |
+| `+34` | `+50` | |
+| `+38` | `+58` | |
+| `+3C` | `+5C` | |
+| `+40` | `+68` | |
+| `+44` | `+70` | |
+| `+48` | `+80` | |
+| `+4C` | `+84` | |
+| `+50` | `+88` | non-zero gates a second 16-byte entry |
+| `+54` | `+90` | |
+| `+58` | `+94` | |
+| `+5C` | `+98` | |
+| `+60` | `+A0` | stored doubled |
+
+`+64..+6F` of the header is never read — the 112-byte read is padded out.
+
+### Entry sizes are 16 bytes
+
+Every table in the record is 16-byte entries, not 24:
+
+* `sub_18009DF10` reads `16 * literal_count` bytes, then for each entry calls
+  `sub_18009DEB0(dest, entry[12], entry[8])` and copies `entry[4..11]` over the
+  first eight bytes of the new string. Entry layout is
+  `[u32][u64 zend string header][u32]`, and the `u64` is
+  `0x0000000600000001` — `refcount 1`, `IS_STRING`.
+* `sub_18009F710` reads `16 * arg_count`, then `arg_count` bytes, then
+  `4 * arg_count` offsets, and stores `2 * offset` into entry `+12`.
+* `sub_1800A4CD0` reads one 16-byte entry, hands `entry[8]` and `entry[12]` to
+  `sub_1800A4C80`, and copies `entry[0..7]` into the result.
+
+For `binancepay_config` the first entry sits at `+0x74` and reads
+`[1, 6][2][17]` — refcount 1, `IS_STRING`, flags 2, length 17, which is exactly
+`'binancepay_config'`.
+
+### Correction to M3.8
+
+`+0x50` is tested for non-zero by the loader as a guard before reading that second
+16-byte entry, so it is not purely a line number. The tiling of 5..34, 36..181,
+184..206, 209..255 across the four records in source order still stands as the
+only explanation offered for the values, but the field is also a presence flag
+and the two uses have not been reconciled.
+
+### Open
+
+The opcode stream itself. The chain above accounts for header, name, literals,
+arguments and one trailing blob; opcodes are the only consumer left, and the blob
+read immediately before `sub_18009F710` is the obvious candidate.
