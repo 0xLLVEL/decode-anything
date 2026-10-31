@@ -2206,3 +2206,49 @@ op array, take `buf`/`len`, and the mask is in hand. `len` should be one of
 The 69069 family (`0x100890D0`..`0x10089190`) is confirmed to be a separate
 4096-word random source: its callers are `0x88C38` and `0x8CCEC`, both unrelated
 to `set_key`.
+
+## M4.7 The 69069 family is retired, by exhaustion
+
+`tools/ic72_seed_brute.ps1` ran the full 2^32 seed space against eight known
+mask bytes of `bp_call_api`, lane 0:
+
+```
+lane 0 : no seed in 2^32 (151.2s)
+```
+
+So the mask is not the output of `0x100890D0`..`0x10089190` under any seed. That
+closes the family M3.17 proposed and M4.4 found running: it is a 4096-word random
+source, full stop.
+
+### The mask looks like data, not output
+
+Recovered mask bytes per record, distinct count against slot count:
+
+| record | distinct mask bytes | slots |
+|---|---|---|
+| config | 3 | 3 |
+| link | 152 | 234 |
+| proxy | 46 | 49 |
+| api | 94 | 111 |
+
+No period under 64, under any of xor / sub / sub-reversed / add against the true
+opcodes. A per-record table of random bytes is what a mask with those statistics
+is; a formula would leave repetition somewhere and there is none.
+
+### The consumer shape is right, the instantiation is not
+
+`0x10088BF0` (XOR the next buffer byte into the stored opcode, guarded by the key
+flag at `+0x18`) ran **10029 times with `keyed=0`** in a full load. Every call took
+the no-key path. `0x10088C10`, the installer, never ran at all.
+
+So that pair is a generic keyed byte source used elsewhere; the op array's mask
+goes through a different routine in this build. Everything M4.6 measured about the
+shape still holds - buffer, length, wrapping cursor - but the address is wrong.
+
+### Where that leaves static
+
+Operands, lines, literals, class bytes, cursors: complete and verified 397/397.
+Opcodes: one buffer of random bytes per record, produced by a routine not yet
+located. The pipeline consumes a mask and emits the full program
+(`ic72_static_dump.py --mask`), so locating that routine finishes the static
+decoder without any further work downstream.
