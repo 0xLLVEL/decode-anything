@@ -2396,3 +2396,110 @@ ae 4f 94 91 17 52 fb 30 1b 29 90 02 de 45 4f 55 36 71 22 0a d2 76 36 9f
 23 59 6c c3 8e a3 44 b1 35 01 16 01 e8 d0 b7 12 d4 59 3a a9 20 57 31 95
 c4 6a fe 15 64 5a eb e1 04 54 46 76 c6 9b 90
 ```
+
+## M4.11 - the mask producer, found and reproduced
+
+Everything above this section treated the mask as unreadable. It is readable. The
+chain, on the real x64 loader (`ioncube_loader_win_7.2.dll`, PE32+, base
+`0x180000000`):
+
+```
+sub_18009F1B0  op_array builder, the decode loop is inside it
+  0x18009F270  mov rcx, [rbx + 0x20]            word array
+  0x18009F278  call sub_18009E8A0               word[cursor], cursor++ (u32)
+  0x18009F282  mov rax, [rbp + 0x48]
+  0x18009F289  mov [rsp + 0x28], rax            mask array, 6th arg slot
+  0x18009F291  mov rax, [rbx + 0x40]
+  0x18009F298  mov [rsp + 0x20], rax            mask array, 5th arg slot
+  0x18009F29D  call sub_18009E8B0               opcode = stored ^ mask[slot]
+```
+
+`sub_18009E8B0` is the whole decoder:
+
+```
+*(a1 + 28) = stored
+if a4 >= 0: return stored                        # no-key path
+if version >= 3 and stored == 0x95: mask[slot] = 0
+op = stored ^ mask[slot]
+if version >= 3 and op == 0x95: mask[slot] = 0 ; return stored
+return op
+```
+
+So `0x95` is a live sentinel, not a mask value: a slot that would decode to
+`0x95` decodes to the stored byte instead, and its mask entry is zeroed. That is
+the one byte where the api mask in the previous section disagrees with the
+generator - `06` there, `00` in the captured mask, because the loader had already
+zeroed it.
+
+### Where the mask array is built
+
+`sub_18009FA20`, called just before the decode loop with the same `r8` struct:
+
+```
+r14 = alloc(4 * (ops + 1))                       # 0x18009FAC4
+for i in range(ops + 1):
+    r14[i] = sub_18009CA60(r12)                  # 0x18009FAE5
+struct->mask = r14                               # 0x18009FB06  [rbp + 0x40]
+```
+
+`sub_18009CA60(state)` is `state->fn(state->data)` - an indirect call through the
+state object's function table entry at `+0x18`, then a tail call into
+`sub_18009C9E0`. On this sample `state->fn` is `sub_18009D340`:
+
+```
+xor eax, dword ptr [rip + 0x48da1]     ; the global holding bytecode_xor_key
+```
+
+and the generator it wraps is `sub_18009D2F0` - the same two-word multiply-add
+already reversed as PRNG-6:
+
+```
+s1 = (s1 & 0xffff) * 0x7689 + (s1 >> 16)
+s0 = (s0 & 0xffff) * 0x4650 + (s0 >> 16)
+out = ROL16(s1) + s0
+return out ^ bytecode_xor_key
+```
+
+`s0`/`s1` are the record's key pair. That was the missing input: the mask is not
+file bytes and not body keystream, it is the record keys through 69069-style word
+arithmetic, and the record keys are already in the container.
+
+The array is one `u32` per slot but the reader is byte indexed (`*(u8 *)(idx + a5)`),
+so slot `i` is byte `i` of the little-endian stream.
+
+### Verification
+
+`tools/ic72_opcode_mask.py` reproduces the mask from the encoded file alone:
+
+| record | mask bytes | generator vs captured |
+| --- | --- | --- |
+| `binancepay_config` | 3 | exact |
+| `binancepay_link` | 234 | exact |
+| `call_bp_proxy` | 49 | exact |
+| `bp_call_api` | 111 | exact except slot 15, the `0x95` sentinel |
+
+Live confirmation on the x64 loader: `sub_18009D340` enters with state
+`0x4ec3cf8c / 0x3481662b`, the record 0 key pair, and its first twelve returns are
+`ecb3e6e1 38506020 72e10b60 a149a46e 1debd303 97b01be7 d32a57d3 9bd94bb2
+9dde2221 1bdbf367 7fc13caf 5643feb8` - the bytes `e1 e6 b3 ec 20 60 50 38 60 0b
+e1 72 ...` the decoder reads at record 0.
+
+`tools/ic72_static_dump.py --php <sample>` decodes 397/397 opcodes with no runtime
+input and zero unknowns. `--mask` still works, it is no longer needed.
+
+```bash
+python tools/ic72_opcode_mask.py sample.php
+python tools/ic72_static_dump.py body72.bin --php sample.php
+```
+
+### What is left
+
+Record 0, the file-level op_array, is still not walkable statically: its 616-byte
+payload at `0x54` is uniform entropy and the `ops/cells` pair is not where
+`head = 0x88` puts it for the four function records. Its mask is known (key pair
+`0x4ec3cf8c / 0x3481662b`, 11 slots, verified against the live decode), so only
+the payload framing is open.
+
+The x86 twin used for M4.4 through M4.9 is not the shipped artifact and its
+findings should not be reused. Everything in this section was measured on the
+PE32+ loader that actually runs.

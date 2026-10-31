@@ -44,12 +44,20 @@ def operand_text(slot, kind, node, literals):
 def main(argv):
     body = Path(argv[1] if len(argv) > 1 else "scratch_body72.bin").read_bytes()
     mask_path = argv[argv.index("--mask") + 1] if "--mask" in argv else None
+    php_path = argv[argv.index("--php") + 1] if "--php" in argv else None
     masks = {}
     if mask_path:
         masks = {
             k: bytes.fromhex(v)
             for k, v in json.loads(Path(mask_path).read_text(encoding="utf-8")).items()
         }
+    elif php_path:
+        from tools.ic72_opcode_mask import record_masks
+        from tools.ic72_static_container import decode_file
+
+        header, _ = decode_file(Path(php_path), payload_index=0)
+        xor_key = int(str(header["initial_header"]["bytecode_xor_key"]), 0)
+        masks = record_masks(body, xor_key)
     want = int(argv[argv.index("--record") + 1]) if "--record" in argv else None
     truth = load_truth(argv[argv.index("--truth") + 1]) if "--truth" in argv else {}
 
@@ -82,7 +90,9 @@ def main(argv):
             slot = entry["index"]
             op = opcodes[slot] if opcodes else None
             if op is None and record.name in masks and slot < len(masks[record.name]):
-                op = entry["opcode"] ^ masks[record.name][slot]
+                from tools.ic72_opcode_mask import decode_slot
+
+                op, _ = decode_slot(entry["opcode"], masks[record.name][slot])
             label = "stored=0x%02X op=%3d" % (entry["opcode"], op) if op is not None else "stored=0x%02X op=  ?" % entry["opcode"]
             cells = " ".join(
                 operand_text(s, k, n, record.literals) for s, k, n in entry["operands"]

@@ -65,3 +65,8 @@ AGENTS*.md
 *.id2
 *.nam
 *.til
+
+# Local PHP runtimes used as live ionCube test beds
+loader/php72-*/
+loader/*.zip
+
