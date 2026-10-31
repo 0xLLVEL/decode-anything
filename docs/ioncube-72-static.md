@@ -2252,3 +2252,57 @@ Opcodes: one buffer of random bytes per record, produced by a routine not yet
 located. The pipeline consumes a mask and emits the full program
 (`ic72_static_dump.py --mask`), so locating that routine finishes the static
 decoder without any further work downstream.
+
+## M4.8 The E8B0 twin, found and then ruled out
+
+The x64 `sub_18009E8B0` twin in the 32-bit build is at RVA `0x100897D0`.
+Disassembly matches the decompiled x64 body line for line:
+
+```
+0x100897D0  decode(self=ecx, index=edx, base=[esp+4])
+              bl = self->[0x18]
+              if (bl == 0x95 || bl == 0x8E) { base[index] = 0; return }
+              al = base[index + index] ^ bl        ; base + edx
+              if (al == 0x95 || al == 0x8E) { base[index] = 0; return }
+              self->[0x18] = al                    ; mask byte chains forward
+              return
+```
+
+Two sentinels, `0x95` and `0x8E` - the second one is the piece the x64 reading
+missed. The mask byte is not a parameter; it is carried on the object at `+0x18`
+and replaced by each result, so the sequence is a running XOR chain.
+
+### Only one of its two callers ever runs
+
+`0x100897D0` has exactly two direct callers:
+
+```
+0x1008AD9E   the string/text layer   -> runs, 11 times
+0x1008DC6E   the op array layer      -> never runs for this sample
+```
+
+Hooked live, every call returns to `0x1008ADA3`. The `0x1008DC40` function that
+contains the op array caller was never entered at all, and the `0x1008E3B4` store
+that installs the mask pointer on the 0x88-byte decoder context never executed
+either. So this sample does not take that branch: whatever decodes its opcodes is
+a different routine.
+
+### The 11 bytes were the wrong 11 bytes
+
+Dumping the buffer behind those calls gives
+
+```
+e1 e6 b3 ec 20 60 50 38 60 0b e1 72 6e a4 49 a1 ...
+```
+
+for eleven entries, with the per-entry structs spaced 28 bytes apart and each one
+carrying version `3` at `+0x14`. That looked like plumbing for eleven opcodes, but
+the surrounding structure holds ASCII the same way - this is the text layer
+walking a decoded blob, and the eleven entries are not main's opcode table.
+
+### Consequence
+
+The `+0x18` running-XOR chain is real and is not the opcode mask. It has been
+removed from the candidate list along with the 69069 family. What remains true:
+the opcode transform consumes one byte per opcode from somewhere, the result is a
+Zend opcode, and the routine that does it has not been located in this build.
