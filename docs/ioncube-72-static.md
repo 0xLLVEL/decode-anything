@@ -2134,3 +2134,75 @@ frame back to whoever filled it. That is the only remaining unknown.
 `tools/ic72_mask_hook.js` holds the working hook set; `ic72_mask_hook_run.py`
 drives `php.exe` from the vendored runtime with `scratch/hook_wrapper.php` to keep
 the process alive long enough for the module observer to land.
+
+## M4.5 The static decoder is finished; only the mask input is missing
+
+`tools/ic72_static_dump.py --mask <json>` now emits the full program: word walk,
+class byte, line, operands, literals, and opcodes `stored ^ mask`. Given the mask
+file it prints **397 of 397 slots with a known opcode** for
+`binancepay_asli.php`, and the numbers match the runtime dump byte for byte.
+
+```
+python tools/ic72_static_dump.py scratch_body72.bin --mask scratch/bp72.masks.json
+slots printed with an opcode: 397
+slots still unknown     : 0
+```
+
+So the pipeline is not missing a stage. It is missing one 32-bit number per
+record, and everything downstream already works.
+
+### Negative results that narrowed the seed
+
+The mask bytes are not in the recovered 4096-dword pools, with or without a
+stride (four lanes, steps 1/2/3/4/8/-1). They are not the 69069 family output
+under the observed seeds, and the XOR of mask against that family shows no
+period under 20. The mask byte stream itself has no period under 20 either.
+
+### Live memory
+
+The mask is not present in the process in plain form after the op arrays are
+built: a scan of all 102 writable ranges for the first sixteen known mask bytes
+of api, link and proxy missed on all three. It is built, applied, and released,
+which is why static analysis has nothing to point at and why the writer has to be
+caught in the act rather than read afterwards.
+
+### Helper that exists now
+
+`tools/ic72_seed_brute.ps1` brute forces the seed against the family model with
+`Add-Type` C# (no compiler on this box), four lanes, 2^32 seeds, checked against
+eight mask bytes. If the family is right the seed falls out; if it is wrong the
+negative is equally useful because it retires the model for good.
+
+## M4.6 The mask source object, found
+
+The x86 loader implements the opcode mask as a *repeating buffer with a cursor*,
+which is exactly the `C9A0` "repeating cycle byte" M3.16 described from the x64
+build. Three tiny routines, RVA base `0x10000000`:
+
+```
+0x10088BC0  next():   al = buf[[0x20]]
+                      cursor wraps: [0x20] = (cursor == len-1) ? 0 : cursor+1
+0x10088BF0  decrypt(stored):  [0x18] ? next() ^ stored : stored
+0x10088C10  set_key:  __fastcall(this=ecx, buf=edx, len=[esp+4])
+                      [0x18]=buf  [0x1c]=len  [0x20]=0
+```
+
+So mask[i] = buf[i mod len]. Not a PRNG stream: a lookup table of arbitrary
+length that the loader carries around. That is why no recurrence fits - the
+array is data, not output.
+
+Hooked live, `0x10088BF0` fires constantly with `[0x18] == 0`, i.e. the no-key
+path returning the stored byte unchanged. The call sites that matter are the ones
+where `set_key` has run first, and `0x10088C10` did not fire in that run, so the
+instrumented instantiation is the unkeyed one.
+
+### What this changes
+
+The search space collapses. There is no seed to brute force for the mask itself -
+there is a buffer to read. Hook `0x10088C10` on the instantiation that serves the
+op array, take `buf`/`len`, and the mask is in hand. `len` should be one of
+111/234/49/3 for this sample; that is the filter to apply.
+
+The 69069 family (`0x100890D0`..`0x10089190`) is confirmed to be a separate
+4096-word random source: its callers are `0x88C38` and `0x8CCEC`, both unrelated
+to `set_key`.

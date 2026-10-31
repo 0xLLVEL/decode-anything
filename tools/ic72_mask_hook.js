@@ -1,47 +1,55 @@
+/**
+ * ionCube 7.2 opcode-mask source, 32-bit loader (base 0x10000000).
+ *
+ *   0x10088BC0  next():  al = [ecx+0x18][ [ecx+0x20] ]
+ *                        cursor wraps at [ecx+0x1c]-1 back to 0
+ *   0x10088BF0  decrypt(stored):  [ecx+0x18] ? next() ^ stored : stored
+ *   0x10088C10  set_key(buf, len): [0x18]=buf [0x1c]=len [0x20]=0
+ *
+ * So the opcode mask is a repeating buffer, not a PRNG stream. Read the buffer.
+ */
+
 const MODULE = "ioncube_loader_win_7.2.dll";
 let installed = false;
-let call = 0;
+
+function hx(p, n) {
+  try {
+    const b = new Uint8Array(p.readByteArray(n));
+    return [...b].map((x) => x.toString(16).padStart(2, "0")).join(" ");
+  } catch (e) {
+    return `read fail ${e}`;
+  }
+}
 
 function install(module) {
   if (installed) return;
   installed = true;
-  console.log(`[hook] base=${module.base}`);
+  const base = module.base;
+  console.log(`[hook] base=${base}`);
 
-  Interceptor.attach(module.base.add(0x890d0), {
-    onEnter() { this.s = this.context.ecx >>> 0; },
-    onLeave(r) { console.log(`[seed] ${this.s} 0x${this.s.toString(16)} -> lcg 0x${(r.toUInt32()>>>0).toString(16)}`); },
-  });
-  Interceptor.attach(module.base.add(0x89140), {
-    onEnter() { this.s = this.context.ecx >>> 0; },
-    onLeave(r) { console.log(`[seed] ${this.s} -> xs 0x${(r.toUInt32()>>>0).toString(16)}`); },
-  });
-
-  Interceptor.attach(module.base.add(0x89190), {
+  Interceptor.attach(base.add(0x88c10), {
     onEnter(args) {
-      this.n = ++call;
-      this.seed = args[0];
-      this.ctx = args[1];
-      console.log(`[gen#${this.n}] seed=${this.seed} ctx=${this.ctx}`);
-    },
-    onLeave() {
-      try {
-        const c = this.ctx;
-        const count = c.readS32();
-        const cursor = c.add(4).readS32();
-        const lcg = c.add(8).readU32();
-        const xs = c.add(0xc).readU32();
-        const fnp = c.add(0x14).readPointer();
-        const arr = c.add(0x18).readPointer();
-        console.log(`[gen#${this.n}] count=${count} cursor=${cursor} lcg=0x${lcg.toString(16)} xs=0x${xs.toString(16)} fn=${fnp} arr=${arr}`);
-        if (!arr.isNull()) {
-          const words = [];
-          const n = Math.min(count, 4096);
-          for (let i = 0; i < n; i++) words.push(arr.add(4 * i).readU32().toString(16).padStart(8, "0"));
-          console.log(`[pool#${this.n}] ${words.join("")}`);
-        }
-      } catch (e) {
-        console.log(`[gen#${this.n}] read fail ${e}`);
+      const buf = args[0];
+      const len = args[1].toInt32();
+      if (len <= 0 || len > 0x100000) return;
+      console.log(`[set_key] buf=${buf} len=${len}`);
+      if (len <= 512 || len === 234 || len === 111 || len === 49 || len === 3) {
+        console.log(`[set_key] ${hx(buf, Math.min(len, 128))}`);
       }
+    },
+  });
+
+  Interceptor.attach(base.add(0x88bf0), {
+    onEnter() {
+      this.src = this.context.ecx;
+      this.stored = this.context.edx & 0xff;
+    },
+    onLeave(r) {
+      if (this.stored === undefined) return;
+      const out = r.toInt32() & 0xff;
+      if (this.n === undefined) this.n = 0;
+      this.n++;
+      if (this.n < 6) console.log(`[decrypt] stored=0x${this.stored.toString(16)} -> 0x${out.toString(16)}`);
     },
   });
 }
