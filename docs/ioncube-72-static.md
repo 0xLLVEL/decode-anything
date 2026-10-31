@@ -920,3 +920,86 @@ segment header `+2c`/`+30` on every record, which closes the loop: the record
 says how big the function is, the segment's header says the same thing, and
 the descriptor says it a third time. The `table` field does not correlate with
 either count, so it stays unnamed until the interpreter names it.
+
+## M3.6 Execution model: opcode spec table, handler dispatch, packed op records
+
+The loader does not interpret the payload as its own instruction set. It builds
+zend-style op arrays and runs them through a handler table it ships itself. Two
+functions in the loader name every piece:
+
+- `sub_18006F1A0` is PHP's `zend_vm_get_opcode_handler`, reimplemented. It reads
+  a 32-bit spec word for the opcode, folds in the op's type bytes, and returns
+  `handler_table[offset + (spec & 0xffff)]`.
+- `sub_18006F0B0` binds the two globals the dispatcher reads: `qword_1800E9848`
+  (handler table) = `off_1800DA650`, `qword_1800E9858` (spec array) =
+  `dword_1800A8D70`.
+
+### Spec word
+
+```
+spec = flags << 16 | base
+```
+
+`base` is the first handler slot for that opcode; each flag multiplies the
+number of slots, and the offset is accumulated left to right:
+
+| flag | dimension | slots |
+|------|-----------|-------|
+| 0x01 | `op+29` (op1_type) via `type_map[]` | 5 |
+| 0x02 | `op+30` (op2_type) via `type_map[]` | 5 |
+| 0x04 | `op+61` via `type_map[]` | 5 |
+| 0x08 | `op+31 != 8` | 2 |
+| 0x10 | `u32 at op+12 < 12` | 2 |
+| 0x20 | `op+60 == 43` / `== 44` | 3 |
+| 0x40 | `u32 at op+20 == 147` / `== 136` | 3 |
+
+`type_map` is `dword_1800A91E0`, indexed by the raw type byte, giving 0..4.
+
+### Measured geometry
+
+```
+spec array      0x1800A8D70   220 dwords, 199 implemented
+type map        0x1800A91E0   7 distinct type bytes
+handler table   0x1800DA650   4922 code pointers in .data
+```
+
+Opcode 23 is a worked example: `spec 0x004301d7`, base 471, flags `0x43`, so
+`5 * 5 * 3 = 75` slots — and opcode 24 starts at exactly 471 + 75 = 546.
+Opcodes 1..99 tile the table without a gap, ending at slot 2332. The array ends
+at index 220: index 220 begins a byte ramp `00 01 02 03`, which is data, not
+spec. Opcodes 0, 199, 202..215 and 217 are zero; 200, 201, 218 and 219 are
+`0xFFFFFFFF` (marked unimplemented); 216 holds a stray `1`.
+
+Tooling: `tools/ic72_vm_table.py` dumps the spec table with the slot arithmetic
+and reports the tiling check.
+
+### The packed op record is 32 bytes
+
+`sub_18002B670` executes one op and does `*a1 += 32`, and `sub_18006EF30` — the
+bad-opcode handler — reports `op[28]`, `op[29]`, `op[30]` and also advances 32.
+From those two the record layout is:
+
+```
++00 .. +07   frame data copied as an 8-byte pair
++08          int32 offset into the record area (callee-side copy source)
++12          int32 literal index, 1-based, tested against count at ctx+32
+             with 24-byte entries at ctx+40
++16          int32 offset applied to the executor frame
++28          opcode
++29          op1_type
++30          op2_type
++31          result_type
+```
+
+Offsets are stored as integers, not pointers, so the record area is position
+independent; that is why the payload's `0x5b...` dwords never need relocation.
+
+### The payload does not contain 32-byte records
+
+Brute force over every start offset of every function segment, requiring all
+`opcode_count` records to satisfy `op[28] <= 200`, `literal <= lits + 1`,
+`type bytes <= 12` and `int32 at +8 % 4 == 0`, returns **zero** candidates for
+`binancepay_link` (128 ops), `call_bp_proxy` (22) and `bp_call_api` (54). So the
+segment holds a packed encoding that is expanded into these records at load
+time, not the records themselves. Locating that expander is the remaining gap
+before the stream at `+0x50` can be turned into opcodes.
