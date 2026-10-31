@@ -581,3 +581,97 @@ python tools/ic72_body_scan.py body72.bin --json
 The open work is unchanged in kind but now bounded: the record walker has to
 reproduce the read order above, and the opcode lane has to be derived from the
 buffer `sub_18009D630` stores.
+
+## M3.2 - the 7.x buffer cipher, fully reversed
+
+The cipher that carries the stored blob is not AES, not DEFLATE, and not the
+8.x lane. It is a two-word LCG with a byte XOR, and the loader's own key
+resolver feeds it. Every piece below was read out of the DLL, not guessed.
+
+### The cipher (sub_180001E10)
+
+```
+prng = factory(6)                              # sub_18009D540 case 6
+state = (seed0(key), seed1(key))               # sub_18009D2E0 stores both words
+for i in range(count):
+    out[i] = ct[i] ^ BYTE1(prng.next())        # BYTE1, not BYTE0
+```
+
+`sub_1800031B0` is the caller: it resolves the key with `sub_180004170`,
+decrypts `a1+64` for `a1+16` bytes into a fresh `emalloc` buffer, then sets
+`a1+64 = new`, `a1+16 = a1+72`. So the span at `+64` is a two-part buffer:
+an already-decoded prefix of `+16` bytes, then ciphertext up to `+72`.
+
+### PRNG 6 (sub_18009D2F0)
+
+```
+state1 = (state1 >> 16) + 30345 * (state1 & 0xFFFF)
+state0 = (state0 >> 16) + 18000 * (state0 & 0xFFFF)
+out    = state0 + rol16(state1)
+```
+
+The generator caches the last output and serves it once more on the next call
+when the cache flag is set, so a naive re-implementation drifts if that branch
+is ignored. `sub_18009D540` also exposes PRNG 4 and PRNG 5 (`MT4IC`), which is
+why 7.2 headers and 7.2 bodies do not share a generator.
+
+### Seeds (sub_180007340 / sub_180007390)
+
+`seed0` is a djb2x: `h = 1025 * (h + signed_byte)`, `h = (h >> 6) ^ h`, final
+`32769 * ((9h) ^ (9h >> 11))`. `seed1` is murmur3 over the same bytes with seed
+31 (`fmix32` tail included). Both take the *key bytes*, so any key change moves
+both words.
+
+### Key generation (sub_18000C7C0)
+
+```
+key = bytes([0x0D]) + SHA1(material + extra)   # 21 bytes
+```
+
+SHA-1 here is the loader's own: `sub_18000BDF0` init, `sub_18000C3E0` update on
+64-byte blocks (512 bits at a time), `sub_18000C590` final, 20-byte digest.
+
+### Where the key material comes from (sub_180004170)
+
+`sub_180004170` dispatches on a license mode and fills two out-params, buffer
+and length. The modes are runtime lookups, not file constants:
+
+| mode | resolver |
+|---|---|
+| 1 | `sub_180003570` - 16 bytes from four header dwords, each byte `+1` |
+| 2 | `estrdup(*(license+8))` - a plain string already in the struct |
+| 3 | `sub_180003AE0` - symbol-table lookup by name |
+| 4 | `sub_180004080` - unpack the header license block, then a symbol lookup |
+| 5 | `sub_180004140` - `sub_18007E170(*(license+8))` |
+
+The lookup itself (`sub_180003BE0`) walks the PHP symbol table for a zend_string
+built from the header name, and falls back to `sub_18000C7C0(name, ...)` with
+the SHA-1 keygen when the table has no entry and `flags & 0x200` is set.
+
+`binancepay_asli.php` carries the name `ioncube_event_handler` at header
+`+0x4C` (length `0x15`) and `php_flags = 0x00048487` - the dynamic-key bit
+`0x8000` is set, so the key is produced by the running application, and the
+handler name in the header is exactly the callback the loader expects the
+script to register. That is the wall: for dynamic-key files the cipher key is
+*not* a function of the file bytes, and no static transform on the 616-byte
+blob will resolve it. Non-dynamic files (mode 1 or 2) stay fully static, since
+their material is either the header dwords or a plain string in the record.
+
+### Tool
+
+```bash
+python tools/ic72_decrypt_span.py body72.bin --offset 0x4C --count 616 \
+    --sample binancepay_asli.php          # tries every header-derived candidate
+python tools/ic72_decrypt_span.py body72.bin --material <hex> [--shift 8] [--dump out.bin]
+python tools/ic72_decrypt_span.py body72.bin --raw-key <hex>
+```
+
+`engines/ioncube/body72.py` holds the primitives (`Type6Rng`, `seed0`,
+`seed1`, `derive_key`, `decrypt_buffer`, `keystream`) so the record walker can
+call the cipher directly instead of re-deriving it.
+
+Cross-check on the sample: the whole header-derived candidate set leaves the
+blob at 36-38% printable, i.e. indistinguishable from random, which is the
+expected fingerprint of a key that is not present in the file. A non-dynamic
+sample is needed to close the opcode lane statically; the record walker itself
+is independent of that and can proceed now.
