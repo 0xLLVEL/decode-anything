@@ -177,7 +177,7 @@ def handle_defined(ctx: DecompileContext, op: Opcode) -> None:
 
 
 @opcode_handler("ZEND_DECLARE_CLASS", "ZEND_DECLARE_CLASS_DELAYED",
-                "ZEND_DECLARE_INHERITED_CLASS_DELAYED",
+                "ZEND_DECLARE_INHERITED_CLASS", "ZEND_DECLARE_INHERITED_CLASS_DELAYED",
                 "ZEND_DECLARE_CONST", "ZEND_DECLARE_ANON_CLASS")
 def handle_declare(ctx: DecompileContext, op: Opcode) -> None:
     # Declarations are reconstructed from function/class tables, not opcodes.

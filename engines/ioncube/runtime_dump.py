@@ -91,6 +91,20 @@ def available_versions() -> list[int]:
     return sorted(v for v in RUNTIME_BUNDLES if find_runtime(v) is not None)
 
 
+# The loader stores jump operands in a scrambled word; only its own materializer
+# turns them back into opline indices.  Without it every branch target is a
+# plausible-looking index in the middle of an expression, which the structurer
+# then reads as an empty if/else body.
+_JUMP_MATERIALIZE_VARS = {
+    "OPCODEDUMP_STATIC_JUMP_MATERIALIZE": "1",
+    "OPCODEDUMP_JUMP_MATERIALIZE_METHODS": "*",
+}
+
+
+def _dump_env() -> dict[str, str]:
+    return {**os.environ, **_JUMP_MATERIALIZE_VARS}
+
+
 def dump_opcodes(source: str | Path, php_version: int, *, timeout: int = 300) -> dict[str, Any]:
     """Run the bundled runtime on *source* and return the ``ic72dump-ir-v3`` dump."""
     root = find_runtime(php_version)
@@ -112,6 +126,7 @@ def dump_opcodes(source: str | Path, php_version: int, *, timeout: int = 300) ->
                     [str(php), "-c", str(root / "runtime" / "php.ini"),
                      str(root / "opcodedump.php"), str(work)],
                     cwd=str(root / "runtime"),
+                    env=_dump_env(),
                     capture_output=True,
                     text=True,
                     errors="replace",
@@ -150,9 +165,10 @@ def _plain(value: Any) -> Any:
 
 
 # The dumper restores the loader's in-memory opcode array, whose jump operands
-# are still partially scrambled by ionCube's per-opline word encoding.  A handful
-# of structurally unambiguous cases can be repaired without guessing: a branch
-# that lands in the middle of an expression, and a foreach latch.
+# are still partially scrambled by ionCube's per-opline word encoding.  Oplines
+# the dumper handed to the loader's materializer are already exact and are left
+# alone; what is left over is patched for the two structurally unambiguous
+# cases: a branch that lands in the middle of an expression, and a foreach latch.
 _CONDITIONAL_JUMPS = frozenset(
     {
         "ZEND_JMPZ",
@@ -260,12 +276,19 @@ def _set_jump_target(op: dict[str, Any], target: int) -> None:
                 operand[key] = target
 
 
+# The dumper flags a jump it handed to the loader's materializer with a spare
+# extended_value bit; that bit is dumper bookkeeping and never part of the IR.
+_JUMP_MATERIALIZED_BIT = 0x200000
+
+
 def _repair_jump_targets(ops: list[dict[str, Any]]) -> int:
     """Rewrite the jump targets that are structurally impossible. Returns count."""
     repaired = 0
     for index, op in enumerate(ops):
         targets = op.get("jump_targets") or []
         if not targets:
+            continue
+        if (op.get("extended_value") or 0) & _JUMP_MATERIALIZED_BIT:
             continue
         target = targets[0]
         name = op.get("opcode_name")
@@ -353,12 +376,13 @@ def _raw_operand(operand: Any, jump_targets: set[int]) -> dict[str, Any]:
 
 def _raw_opcode(op: dict[str, Any], fallback_index: int) -> dict[str, Any]:
     jump_targets = {int(t) for t in (op.get("jump_targets") or []) if isinstance(t, int)}
+    extended = (op.get("extended_value") or 0) & ~_JUMP_MATERIALIZED_BIT
     return {
         "index": op.get("index", fallback_index),
         "lineno": op.get("line") or 0,
         "opcode": op.get("opcode"),
         "opcode_name": op.get("opcode_name"),
-        "extended_value": op.get("extended_value") or 0,
+        "extended_value": extended,
         "op1": _raw_operand(op.get("op1"), jump_targets),
         "op2": _raw_operand(op.get("op2"), jump_targets),
         "result": _raw_operand(op.get("result"), jump_targets),

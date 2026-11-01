@@ -146,6 +146,25 @@ execute half of it.
 A rebuild is verified by dumping the same encoded files before and after: the JSON differs only in
 the `handler` pointer field, and `decompile.py` must produce byte-identical PHP.
 
+### Jump operands need the loader's own materializer
+
+The restored op array still carries scrambled jump words: `ZEND_JMPZ`'s `op2` and `ZEND_JMP`'s
+`op1` hold values that look like opline indices but land inside expressions.  Feeding those to the
+decompiler turns every branch body into an empty `if` and loses whole statements, so the runtime
+dump is produced with
+
+```
+OPCODEDUMP_STATIC_JUMP_MATERIALIZE=1
+OPCODEDUMP_JUMP_MATERIALIZE_METHODS=*
+```
+
+`engines/ioncube/runtime_dump.py` sets both for every dump.  The extension then routes each jump
+opline through the loader's materializer, which restores the real target and flags the opline with a
+spare `extended_value` bit; the bridge drops that bit and skips its own fallback repair for the
+oplines that were materialized.  On `contacts.php` this is the difference between 20 and 44
+recovered `foreach` loops, and it also fixes the PHP 7.4 path (`next.php` regains its
+`foreach ($data_tabs as $key => $data_tab)`).
+
 ### Result: the cipher factory is never used for this file
 
 With both breakpoints armed during a successful compile (`Restricted Access` HTML is printed), neither

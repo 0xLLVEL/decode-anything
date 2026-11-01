@@ -293,6 +293,57 @@ def test_foreach_latch_targets_the_fetch_opline():
     assert ops[3]["op1"]["num"] == 1
 
 
+def test_materialized_jump_target_is_kept_verbatim():
+    """A target the loader's own materializer produced must not be second-guessed."""
+    from engines.ioncube.runtime_dump import _JUMP_MATERIALIZED_BIT, to_icdump
+
+    def build(extended):
+        return {
+            "format": "ic72dump-ir-v3",
+            "op_arrays": {
+                "main": {
+                    "id": "main",
+                    "kind": "main",
+                    "function_name": None,
+                    "fn_flags": 0,
+                    "line_start": 1,
+                    "line_end": 5,
+                    "last_var": 0,
+                    "T": 0,
+                    "vars": [],
+                    "arg_info": [],
+                    "literals": [],                            "opcodes": [
+                                _op(0, "ZEND_JMPZ", _unused(), _unused(6), jumps=(6,), extended=extended),
+                                _op(1, "ZEND_ASSIGN"),
+                                _op(2, "ZEND_JMP"),
+                                _op(3, "ZEND_INIT_FCALL_BY_NAME"),
+                                _op(4, "ZEND_RETURN"),
+                                _op(5, "ZEND_RETURN"),
+                                _op(6, "ZEND_CONCAT"),
+                            ],
+                }
+            },
+            "function_index": {},
+            "class_index": {},
+        }
+
+    guessed = to_icdump(build(0), "demo.php")["op_arrays"]["main"]["opcodes"][0]
+    assert guessed["op2"]["num"] == 3  # the heuristic moved it off the concat
+
+    materialized = to_icdump(build(_JUMP_MATERIALIZED_BIT), "demo.php")["op_arrays"]["main"]["opcodes"][0]
+    assert materialized["op2"]["num"] == 6
+    assert materialized["extended_value"] == 0  # the dumper's flag bit is not IR
+
+
+def test_dump_asks_the_loader_to_materialize_jump_operands():
+    from engines.ioncube.runtime_dump import _dump_env
+
+    env = _dump_env()
+
+    assert env["OPCODEDUMP_STATIC_JUMP_MATERIALIZE"] == "1"
+    assert env["OPCODEDUMP_JUMP_MATERIALIZE_METHODS"] == "*"
+
+
 def test_class_methods_become_methods_not_top_level_functions():
     ir = {
         "op_arrays": {

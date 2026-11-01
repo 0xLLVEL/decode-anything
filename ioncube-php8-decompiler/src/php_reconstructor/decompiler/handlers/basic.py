@@ -47,6 +47,25 @@ def handle_assign_op(ctx: DecompileContext, op: Opcode) -> None:
     _emit_assign(ctx, op, php.Assign(target=target, value=value, op=operator))
 
 
+# PHP 7.0-7.3 give every compound assignment its own opcode; PHP 7.4 folds them
+# into ZEND_ASSIGN_OP with an extended_value.  The runtime dump targets both.
+_COMPOUND_ASSIGN_OPERATORS: dict[str, str] = {
+    f"ZEND_ASSIGN_{suffix}": BINARY_OPS[f"ZEND_{suffix}"]
+    for suffix in (
+        "ADD", "SUB", "MUL", "DIV", "MOD", "SL", "SR",
+        "CONCAT", "BW_OR", "BW_AND", "BW_XOR", "POW",
+    )
+}
+
+
+@opcode_handler(*_COMPOUND_ASSIGN_OPERATORS)
+def handle_compound_assign(ctx: DecompileContext, op: Opcode) -> None:
+    operator = _COMPOUND_ASSIGN_OPERATORS[op.name]
+    value = ctx.resolve(op.op2, op)
+    target = ctx.resolve(op.op1, op)
+    _emit_assign(ctx, op, php.Assign(target=target, value=value, op=operator))
+
+
 @opcode_handler("ZEND_ASSIGN_DIM")
 def handle_assign_dim(ctx: DecompileContext, op: Opcode) -> int:
     index = None if op.op2.is_unused else ctx.resolve(op.op2, op)
