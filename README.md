@@ -186,6 +186,7 @@ All 202 test cases pass:
   - [`engines/sourceguardian/`](engines/sourceguardian/) — Static SourceGuardian envelope decryptor, LZO1X inflator, and bytecode IR parser (`container.py`, `bytecode_ir.py`, `lzo1x.py`).
   - [`engines/yakpro/`](engines/yakpro/) — YAK Pro control-flow graph (CFG) restructurer, goto-eliminator, and string de-escaper (`deobfuscator.py`).
 - [`tools/`](tools/) — Reverse-engineering utilities: loader extractor, base64 blob decoder, the static 7.2 pipeline (`ic72_static_container.py`, `ic72_record_walk.py`, `ic72_op_walk.py`, `ic72_opcode_mask.py`, `ic72_record0.py`, `ic72_static_dump.py`), and the runtime 7.x debugger probes (`ic72_record_guard.py`, `ic72_blob_watch.py`, `ic72_cipher_trace.py`, `ic72_keystream.py`, `ic72_memdump.py`).
+  - [`tools/opcodedump/`](tools/opcodedump/) — C source of `php_opcodedump.dll`, the PHP 7.2 extension that decodes the loader's in-memory op arrays; `build.bat` rebuilds it against the runtime bundle's 7.2 headers (see [`docs/ioncube-72-static.md`](docs/ioncube-72-static.md#rebuilding-the-opcode-dumper-php_opcodedumpdll)).
 - [`docs/`](docs/) — Loader analysis notes: [`ioncube-72-static.md`](docs/ioncube-72-static.md) for the 7.2 static decode map, [`rea-ida.md`](docs/rea-ida.md) for the REA/IDA workflow.
 - [`ioncube-php8-decompiler/`](ioncube-php8-decompiler/) — High-level PHP abstract syntax tree (AST) engine:
   - `src/php_reconstructor/decompiler/` — Opcode handlers, CFG structurer, and optimization passes.

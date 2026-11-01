@@ -114,6 +114,38 @@ Two tools were added to observe the loader instead of guessing:
 - `tools/ic72_memdump.py` — includes the encoded file behind a shutdown `sleep()`, then reads the
   live process with `ReadProcessMemory` and saves regions that contain decoded text.
 
+### Rebuilding the opcode dumper (`php_opcodedump.dll`)
+
+The extension that walks the loader's op arrays is C source in `tools/opcodedump/`.  It links against
+PHP 7.2 NTS x86, so both the devel headers and the output directory stay in the gitignored runtime
+bundle, which is also where the built DLL is deployed:
+
+```
+tools/opcodedump/build.bat
+```
+
+The script needs the x86 toolchain (`vcvars32.bat`, path set at the top) and finds the headers at
+`loader/refs/ic72dump-opcodes/build/devel/php-7.2.34-devel-VC15-x86`; point `IONCUBE_OPCODEDUMP_HOME`
+at another bundle root to build elsewhere.  It writes `build/out/php_opcodedump.dll`, which is copied
+to `loader/refs/ic72dump-opcodes/runtime/ext/php_opcodedump.dll` to take effect.  The 8.1 – 8.4 static
+lane does not use this DLL.
+
+Three things in the source are load-bearing and easy to break:
+
+- The hook lengths (`IC_STEP2_HOOK_LEN`, `IC_JUMP_HOOK_LEN`, `IC_CALLBACK_CTX_HOOK_LEN`,
+  `IC_HIDE_OP_ARRAY_HOOK_LEN`) each copy a fixed prologue into a trampoline and jump back to
+  `target + len`.  Every length is the sum of whole instructions in the 7.2.34 loader; the byte
+groups are written next to the defines.  A length that splits an instruction makes the trampoline
+execute half of it.
+- `sub_100626F0` writes through `op_array->arg_info`, so the dumper swaps in its own scratch block
+  for the call and restores the real pointer after.  A scratch smaller than the loader's write
+  stride would land in the caller's frame.
+- A stream pointer derived from the descriptor (`desc[5] ^ key`) is only adopted after a committed
+  readable probe over `last * sizeof(zend_op)`; unlike the other paths it is a computed address.
+
+A rebuild is verified by dumping the same encoded files before and after: the JSON differs only in
+the `handler` pointer field, and `decompile.py` must produce byte-identical PHP.
+
 ### Result: the cipher factory is never used for this file
 
 With both breakpoints armed during a successful compile (`Restricted Access` HTML is printed), neither
