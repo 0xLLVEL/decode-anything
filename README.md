@@ -82,7 +82,7 @@ Modern PHP applications often combine binary byte-code encoders with static cont
   ```bash
   pip install pefile pytest
   ```
-- **PHP 7.x runtime bundles** (only for ionCube 7.1 – 7.4 inputs through `decompile.py`): point `IONCUBE_OPCODEDUMP_HOME` at a directory holding the `ic72dump-opcodes` / `ic74dump-opcodes` checkouts, or keep them under `loader/opcodedump` or `scratch/refs`. The 8.1 – 8.4 static path and the 7.2 static record tools need nothing beyond Python.
+- **PHP 7.x runtime bundles** (only for ionCube 7.1 – 7.4 inputs through `decompile.py`): point `IONCUBE_OPCODEDUMP_HOME` at a directory holding the `ic72dump-opcodes` / `ic74dump-opcodes` checkouts, or keep them under `loader/opcodedump` or `loader/refs`. The 8.1 – 8.4 static path and the 7.2 static record tools need nothing beyond Python.
 
 ### Quick Usage
 

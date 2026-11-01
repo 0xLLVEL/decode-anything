@@ -14,7 +14,7 @@ the 8.x static path.
 
 Runtime bundles are not vendored: point ``IONCUBE_OPCODEDUMP_HOME`` at a
 directory holding ``ic72dump-opcodes`` / ``ic74dump-opcodes`` style checkouts,
-or keep them under ``loader/opcodedump`` or ``scratch/refs``.
+or keep them under ``loader/opcodedump`` or ``loader/refs``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 _SEARCH_ROOTS = (
     _PROJECT_ROOT / "loader" / "opcodedump",
-    _PROJECT_ROOT / "scratch" / "refs",
+    _PROJECT_ROOT / "loader" / "refs",
 )
 
 

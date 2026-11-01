@@ -90,7 +90,7 @@ uses and what key bytes reach it.
 
 ## Runtime instrumentation (32-bit loader)
 
-The working runtime (`scratch/refs/ic72dump-opcodes/runtime`) is **PHP 7.2.34 NTS x86**, so it loads
+The working runtime (`loader/refs/ic72dump-opcodes/runtime`) is **PHP 7.2.34 NTS x86**, so it loads
 the 32-bit `ioncube_loader_win_7.2.dll` (809,984 bytes), not the 64-bit build mapped above.  The
 same primitives exist with different addresses:
 
@@ -296,8 +296,8 @@ Reproduced with:
 
 ```bash
 python tools/ic72_record_guard.py \
-  --php scratch/refs/ic72dump-opcodes/runtime/php.exe \
-  --loader scratch/refs/ic72dump-opcodes/runtime/ext/ioncube_loader_win_7.2.dll \
+  --php loader/refs/ic72dump-opcodes/runtime/php.exe \
+  --loader loader/refs/ic72dump-opcodes/runtime/ext/ioncube_loader_win_7.2.dll \
   --target scratch/rt/binancepay_asli.php \
   --auto --bp 0x7190 --dump-bp 0x7190 --dump-to scratch/ic72_plain_buffer.php
 ```
@@ -308,7 +308,7 @@ handler), not part of `zend_compile_file`. Any further breakpoints belong on the
 
 Loader/CPU note: `loader/ioncube_loader_win_7.2.dll` is the **x64** build (machine `0x8664`,
 image base `0x180000000`) and cannot load into the 32-bit CLI. The 32-bit build used above is
-`scratch/refs/ic72dump-opcodes/runtime/ext/ioncube_loader_win_7.2.dll` (machine `0x14C`,
+`loader/refs/ic72dump-opcodes/runtime/ext/ioncube_loader_win_7.2.dll` (machine `0x14C`,
 base `0x10000000`), which is the one all the `0x1xxxxx` RVAs refer to.
 
 ## The text layer is base64 — located and proven
@@ -1879,7 +1879,7 @@ of every opcode remains the only trustworthy output.
 
 The static work in M3.1 through M3.17 was never the only route. `engines/ioncube/
 runtime_dump.py` drives the vendored PHP 7.2 bundle at
-`scratch/refs/ic72dump-opcodes` (PHP 7.2.34 NTS x86, `php_opcodedump.dll`,
+`loader/refs/ic72dump-opcodes` (PHP 7.2.34 NTS x86, `php_opcodedump.dll`,
 `ioncube_loader_win_7.2.dll`) and reads the op arrays the loader builds in
 memory. `available_versions()` reports `[71, 72, 74]`.
 
@@ -2090,7 +2090,7 @@ Short version: 8.x ships the key in the file. 7.2 ships it in the licence.
 ## M4.4 The 32-bit loader, live: the 69069 family is not the mask
 
 The build that actually runs is x86. `ioncube_loader_win_7.2.dll` in
-`scratch/refs/ic72dump-opcodes/runtime/ext` is PE32, image base `0x10000000`,
+`loader/refs/ic72dump-opcodes/runtime/ext` is PE32, image base `0x10000000`,
 and ships an IDA database beside it. Every routine below is that build.
 
 ### Recovered, executed, and observed
