@@ -40,6 +40,24 @@ def load_payload(path: Path, payload_index: int) -> bytes:
     return decode_custom_base64(raw_payload)
 
 
+def program_key_words(
+    header_report: dict, record_count: int
+) -> tuple[int, int, int, int]:
+    """The four dwords ``sub_180003570`` reads, straight from the parsed header.
+
+    ``header_report`` is what :func:`decode_file` returns; ``record_count`` is the
+    number of records :func:`tools.ic72_record_walk.resync` finds in the body.
+    """
+
+    from engines.ioncube.body72 import key_words
+
+    return key_words(
+        int(header_report["meta_header"]["header_size"]),
+        record_count,
+        int(str(header_report["header_trailer"]["evaluation_min_raw"]), 0),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", type=Path, help="encoded PHP file")

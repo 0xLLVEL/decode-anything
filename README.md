@@ -215,7 +215,7 @@ All 199 test cases pass:
 - [x] Static recovery of the 7.2 text layer: the record parser at `0x6C340` hands `HR+c` payloads to `sub_10065D50`, whose reverse table at `0x10093BC0` decodes the base64 body byte-exactly (9,699 bytes, record magic `0x67A6BF45`).
 - [x] 7.2 header and body verified statically: chunked envelope, `MT4IC` PRNG, MD4 trailer, and both body checksums match.
 - [x] Static 7.2 `sv5` record walker and opcode decoder: the opcode mask is reproduced from each record's key pair (397/397 opcodes equal the runtime dump), and the file-level record cipher (`sub_180001E10`) plus its 16-byte key (`sub_180003570`) are reversed, so all five `op_array`s now decode from the file alone.
-- [ ] Derive the four program key words (`0xB8`, record count, `0`, a per-file hash) without a runtime, so the file-level record needs no supplied key — the last step before the PHP runtime can be dropped for 7.x.
+- [x] Derive the four program key words without a runtime: the loader copies the header size, the record count, `0`, and the trailer's `evaluation_min_raw` licence dword into the context, so the file-level record now decrypts from the file alone. See [`docs/ioncube-72-static.md`](docs/ioncube-72-static.md) (M4.13).
 
 ### 6. 🔒 Zend Guard Decompiler
 - [ ] Support for legacy Zend Guard protected archives (`Zend\x00` format).

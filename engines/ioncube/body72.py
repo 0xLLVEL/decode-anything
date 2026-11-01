@@ -128,6 +128,23 @@ def keystream(key: bytes, count: int, shift: int = 8) -> bytes:
     return bytes((rng.next() >> shift) & 0xFF for _ in range(count))
 
 
+def key_words(
+    header_size: int, record_count: int, evaluation_min_raw: int
+) -> tuple[int, int, int, int]:
+    """The four dwords ``sub_180003570`` consumes, from the header alone.
+
+    ``sub_1800031B0`` passes ``ctx->words`` -- six ``int *``, of which the key
+    builder reads slots 2..5 -- to the resolver. On the shipped x64 loader those
+    four slots hold, in order: the header size (``0xB8`` on every 7.2 file seen),
+    the number of body records, zero, and the trailer's ``evaluation_min_raw``
+    licence dword at ``header + 0xA0``.
+
+    Slot 3 is the one that changes per file and is not stored in the clear: it
+    is the ``evaluation_min_raw`` field the header trailer already carries.
+    """
+    return (header_size, record_count, 0, evaluation_min_raw)
+
+
 def record_key(words: Sequence[int]) -> bytes:
     """``sub_180003570`` -- the 17-byte key from four little-endian dwords.
 

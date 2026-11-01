@@ -7,15 +7,17 @@ is the one exception - its 616-byte payload is encrypted with the record cipher
 context (`sub_180003570`).
 
 The cipher is a solved problem: `engines.ioncube.body72.decrypt_record`
-reproduces the loader's plaintext byte for byte. What is still open is where
-those four dwords come from. Feed them in and this decodes the record; the
-loader's own runtime dump can then confirm it.
+reproduces the loader's plaintext byte for byte, and so is the key. The loader
+fills four dwords from its own header parse -- header size, record count, zero,
+and the trailer's `evaluation_min_raw` licence dword -- so the file alone is
+enough. `--words` still overrides them for experiments.
 
 Usage:
-    python tools/ic72_record0.py sample.php --words b8,5,0,29806ff7
-    python tools/ic72_record0.py sample.php --words b8,5,0,29806ff7 \
+    python tools/ic72_record0.py sample.php
+    python tools/ic72_record0.py sample.php \
         --truth scratch/rt/binancepay_asli.opcodes.json
-    python tools/ic72_record0.py sample.php --words ... --dump scratch/rec0.bin
+    python tools/ic72_record0.py sample.php --words b8,5,0,29806ff7
+    python tools/ic72_record0.py sample.php --dump scratch/rec0.bin
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from tools.ic72_static_container import (  # noqa: E402
     decode_file,
     decode_payload_body,
     load_payload,
+    program_key_words,
 )
 
 FILE_LEVEL_HEAD = 0x78
@@ -60,7 +63,10 @@ def truth_opcodes(path: Path) -> list[int] | None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", type=Path, help="encoded PHP file")
-    parser.add_argument("--words", required=True, help="four dwords, 0xb8,5,0,0x29806ff7")
+    parser.add_argument(
+        "--words",
+        help="override the four key dwords (default: derived from the header)",
+    )
     parser.add_argument("--dump", type=Path, help="write the decoded record image here")
     parser.add_argument("--truth", type=Path, help="runtime opcode dump to compare against")
     parser.add_argument("--json", action="store_true")
@@ -76,7 +82,12 @@ def main(argv: list[str]) -> int:
     record = records[0]
     ciphertext = body[record.payload_offset : record.payload_offset + record.payload_size]
 
-    key = record_key(parse_words(args.words))
+    words = (
+        parse_words(args.words)
+        if args.words
+        else list(program_key_words(header, len(records)))
+    )
+    key = record_key(words)
     image = decrypt_record(ciphertext, key)
     if args.dump:
         args.dump.write_bytes(image)
@@ -97,6 +108,7 @@ def main(argv: list[str]) -> int:
             json.dumps(
                 {
                     "record": record.name or "<file-level>",
+                    "words": words,
                     "key": key.hex(),
                     "ops": walked["ops"],
                     "cells": walked["cells"],
@@ -110,6 +122,7 @@ def main(argv: list[str]) -> int:
         )
         return 0 if matched in (None, walked["ops"]) else 1
 
+    print("words          " + ", ".join(f"0x{word:x}" for word in words))
     print(f"key            {key.hex(' ')}")
     print(f"payload        {record.payload_size} bytes at {record.payload_offset:#x}")
     print(f"image head     {image[:8].hex(' ')}")

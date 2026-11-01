@@ -2494,11 +2494,12 @@ python tools/ic72_static_dump.py body72.bin --php sample.php
 
 ### What is left
 
-Record 0, the file-level op_array, is still not walkable statically: its 616-byte
+Record 0, the file-level op_array, is not walkable at this point: its 616-byte
 payload at `0x54` is uniform entropy and the `ops/cells` pair is not where
 `head = 0x88` puts it for the four function records. Its mask is known (key pair
 `0x4ec3cf8c / 0x3481662b`, 11 slots, verified against the live decode), so only
-the payload framing is open.
+the payload framing is open. M4.12 closes this: the payload is ciphertext, and
+M4.13 derives its key from the header.
 
 The x86 twin used for M4.4 through M4.9 is not the shipped artifact and its
 findings should not be reused. Everything in this section was measured on the
@@ -2558,36 +2559,85 @@ walked with two differences from the function records:
 | line suppression | class bit `0x08` zeroes the line | no suppression bit |
 
 `tools/ic72_record0.py` applies all three and prints the record;
-`tools/ic72_static_dump.py --key-words` folds it into the normal dump.
+`tools/ic72_static_dump.py` folds it into the normal dump.
 
 ```
-python tools/ic72_record0.py sample.php --words 0xb8,5,0,0x29806ff7   --truth scratch/rt/binancepay_asli.opcodes.json
+python tools/ic72_record0.py sample.php --truth scratch/rt/binancepay_asli.opcodes.json
 ```
 
 Result for `binancepay_asli.php`: `ops=11 cells=12 aux=165/165`, all eleven
 opcodes equal to the runtime dump, every line number equal (3, 3, 3, 3, 3, 3,
 5, 36, 184, 209, 256), operands in the same slots.
 
-### What is left: where the four dwords come from
+## M4.13 — the four dwords, solved: they are header fields
 
-Measured across two samples (`binancepay_asli.php`, `freetrial.php`):
+Word 3 was never a digest. It is the header trailer's `evaluation_min_raw`
+dword — the licence evaluation window the loader already parses — read straight
+out of the decrypted header.
 
-| word | binancepay | freetrial | reading |
-| --- | --- | --- | --- |
-| 0 | `0xB8` | `0xB8` | constant |
-| 1 | `5` | `2` | total record count (1 file-level + N functions) |
-| 2 | `0` | `0` | constant |
-| 3 | `0x29806FF7` | `0x201A58A2` | per-file hash, still unidentified |
+Where the array comes from. `sub_1800031B0` is the record decrypt driver, and it
+receives the program context `v7` from `sub_1800020D0`:
 
-Word 3 is deterministic per file (identical across runs) and is not stored
-anywhere in the file, the payload, or the inflated body. The hashes the loader
-exports (`0x180007340`, `0x180007390`) are only ever called on the 17-byte key
-itself during the run, and CRC-32/Adler-32/FNV-1a/djb2/sdbm/jenkins over the
-raw file, the payload, the body, the record payloads and every structural
-sub-range all miss. The four dwords live inside the loader's program context,
-immediately before the interned name table (`binancepay_link`, `call_bp_proxy`,
-`secret_key`, ...), which makes a name-table digest the most likely reading.
+```
+sub_1800020D0(a1):  return *(a1 + 200) + 136      # v7, the per-file context
+sub_180003330(v7):
+    0x1800033af  if [v7 + 0x28] != 0
+    0x1800033b8      sub_1800031B0(v7)
+sub_1800031B0(v7):
+    sub_180004170([v7+0x20], [v7+0x38]+8, [v7+0x38]+16,
+                  [v7+0x08], [v7+0x30], &s, &len)
+```
 
-Consequence: record 0 decodes statically once the four words are supplied, and
-only word 3 needs a producer. Everything downstream of the key is finished.
+`[v7 + 0x30]` is a six-entry `int *` array and `sub_180004170` passes it to
+`sub_180003570`, which reads slots 2..5. The live loader fills them with the
+header size, the record count, zero, and the trailer dword:
+
+```
+[0x1512226eba0] = 1                         slot 0
+[0x00000000000] = -                         slot 1
+[0x15122286050] = 0xB8                       slot 2   header size
+[0x15122286054] = 5                          slot 3   record count
+[0x15122286058] = 0                          slot 4
+[0x1512228605c] = 0x29806FF7                 slot 5   evaluation_min_raw
+```
+
+The slot pointers are one contiguous block, so the loader is copying four
+header fields into the context, not hashing anything.
+
+Measured live on both samples (`sub_1800031B0` entry, Frida) and parsed, plus
+the second file of the freetrial set:
+
+| word | binancepay | freetrial | freetrial/functions | reading |
+| --- | --- | --- | --- | --- |
+| header size | `0xB8` | `0xB8` | `0xB8` | `meta_header.header_size` |
+| record count | `5` | `2` | `3` | `len(resync(body, 4))` |
+| 0 | `0` | `0` | `0` | constant |
+| 3 | `0x29806FF7` | `0x201A58A2` | `0x201A58A2` | `header_trailer.evaluation_min_raw` |
+
+`evaluation_min_raw` sits in the 40-byte trailer that closes the decrypted
+header, at `trailer + 32` (`header[-8]`); `parse_header_trailer` already exposes
+it as `evaluation_min_unix - 1023976199`. The earlier search missed it because it was
+looking for a checksum of program data rather than for a field of the header it
+had already decoded.
+
+The producer is therefore `sub_180003570`'s caller, not a hash routine: the
+context builder copies `header_size`, the record count, `0` and the trailer
+dword into a four-dword block during header parse, and `sub_180004170` re-emits
+it as the 17-byte key on demand.
+
+### Status
+
+No supplied key is needed any more. `engines.ioncube.body72.key_words` derives
+the four dwords from the parsed header, `tools/ic72_static_container.py`
+adapts them from `decode_file`, and both record-0 tools fall back to them:
+
+```
+python tools/ic72_record0.py sample.php
+python tools/ic72_record0.py sample.php --truth scratch/rt/binancepay_asli.opcodes.json
+python tools/ic72_static_dump.py body72.bin --php sample.php
+```
+
+`binancepay_asli.php` still matches the runtime dump 11/11 with derived words.
+`freetrial.php` and `freetrial/functions.php` decode to structurally clean
+images (`02 00 00 00`, `aux == 15 * ops`) with no key input.
 

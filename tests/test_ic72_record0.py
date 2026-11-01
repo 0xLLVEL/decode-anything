@@ -10,13 +10,17 @@ from pathlib import Path
 
 import pytest
 
-from engines.ioncube.body72 import decrypt_record, record_key
+from engines.ioncube.body72 import decrypt_record, key_words, record_key
 from tools.ic72_op_walk import walk_record
 
 KEY_WORDS = [0xB8, 5, 0, 0x29806FF7]
 KEY = bytes.fromhex("010101b901010106010101012a8170f800")
 SAMPLE = Path(r"C:\Users\ezan\Documents\samples\binancepay_asli.php")
 TRUTH = Path("scratch/rt/binancepay_asli.opcodes.json")
+FREETRIAL = (
+    Path(r"C:\Users\ezan\Documents\samples\freetrial\freetrial.php"),
+    Path(r"C:\Users\ezan\Documents\samples\freetrial\functions.php"),
+)
 
 
 def test_record_key_increments_every_big_endian_byte():
@@ -36,6 +40,12 @@ def test_record_cipher_is_an_involution():
     assert decrypt_record(decrypt_record(payload, key), key) == payload
 
 
+def test_key_words_are_header_fields():
+    # Live loader, sub_1800031B0 entry: slots 2..5 hold these four dwords.
+    assert key_words(184, 5, 0x29806FF7) == tuple(KEY_WORDS)
+    assert key_words(184, 2, 0x201A58A2) == (0xB8, 2, 0, 0x201A58A2)
+
+
 def test_record_key_rejects_wrong_word_count():
     with pytest.raises(ValueError):
         record_key([1, 2, 3])
@@ -49,6 +59,7 @@ def test_file_level_record_matches_runtime_dump():
         decode_file,
         decode_payload_body,
         load_payload,
+        program_key_words,
     )
 
     payload = load_payload(SAMPLE, 0)
@@ -56,9 +67,12 @@ def test_file_level_record_matches_runtime_dump():
     version = int(str(header["initial_header"]["version"]), 0)
     body = decode_payload_body(payload, int(header["body_offset"]), version).decompressed
 
-    record = resync(body, 4)[0]
+    records = resync(body, 4)
+    record = records[0]
     ciphertext = body[record.payload_offset : record.payload_offset + record.payload_size]
-    image = decrypt_record(ciphertext, record_key(KEY_WORDS))
+    words = program_key_words(header, len(records))
+    assert list(words) == KEY_WORDS
+    image = decrypt_record(ciphertext, record_key(words))
 
     # The loader writes the same image into a fresh page-aligned buffer; this
     # digest pins the decrypted form.
@@ -75,6 +89,36 @@ def test_file_level_record_matches_runtime_dump():
         assert [op["opcode"] for op in truth["opcodes"]] == [
             59, 116, 131, 47, 79, 52, 0, 0, 0, 0, 62
         ]
+
+
+@pytest.mark.skipif(
+    not all(sample.exists() for sample in FREETRIAL), reason="sample files not available"
+)
+@pytest.mark.parametrize("sample", FREETRIAL)
+def test_derived_words_decode_without_supplied_key(sample):
+    from tools.ic72_record0 import FILE_LEVEL_HEAD
+    from tools.ic72_record_walk import resync
+    from tools.ic72_static_container import (
+        decode_file,
+        decode_payload_body,
+        load_payload,
+        program_key_words,
+    )
+
+    payload = load_payload(sample, 0)
+    header, _ = decode_file(sample, payload_index=0)
+    version = int(str(header["initial_header"]["version"]), 0)
+    body = decode_payload_body(payload, int(header["body_offset"]), version).decompressed
+
+    records = resync(body, 4)
+    record = records[0]
+    ciphertext = body[record.payload_offset : record.payload_offset + record.payload_size]
+    image = decrypt_record(ciphertext, record_key(program_key_words(header, len(records))))
+
+    assert image[0] == 0x02
+    walked = walk_record(image, 0, head=FILE_LEVEL_HEAD, fixed_aux=True)
+    assert walked["aux_consumed"] == 15 * walked["ops"]
+    assert 0 < walked["ops"] < 64
 
 
 IMAGE_SHA1 = "6abb790c7f90e61988250a9486d3db6b89b80967"

@@ -79,6 +79,10 @@ def main(argv):
     words = None
     if "--key-words" in argv:
         words = [int(part, 0) for part in argv[argv.index("--key-words") + 1].split(",")]
+    elif php_path:
+        from tools.ic72_static_container import program_key_words
+
+        words = list(program_key_words(header, len(resync(body, 4))))
     want = int(argv[argv.index("--record") + 1]) if "--record" in argv else None
     truth = load_truth(argv[argv.index("--truth") + 1]) if "--truth" in argv else {}
 
