@@ -1,11 +1,11 @@
 # Decode-Anything: Unified PHP Decompiler & Deobfuscator
 
-[![Python Tests](https://img.shields.io/badge/tests-199%20passed-brightgreen.svg)](tests/)
+[![Python Tests](https://img.shields.io/badge/tests-202%20passed-brightgreen.svg)](tests/)
 [![Target PHP](https://img.shields.io/badge/PHP-7.2%20%E2%80%93%208.4-blue.svg)](https://php.net)
 [![Supported](https://img.shields.io/badge/Encoders-ionCube%20%7C%20SourceGuardian%20%7C%20YAK%20Pro-purple.svg)](https://github.com/0xLLVEL/decode-anything)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An advanced, reverse-engineering toolkit and unified multi-engine decompiler for protected and obfuscated PHP applications. It seamlessly handles **IonCube (static for PHP 8.1 – 8.4, runtime-assisted for 7.x)**, **SourceGuardian (ixed)**, and **YAK Pro (Control Flow Flattening & Goto Obfuscation)**, reconstructing clean, valid, and PSR-12 idiomatic PHP source code.
+An advanced, reverse-engineering toolkit and unified multi-engine decompiler for protected and obfuscated PHP applications. It seamlessly handles **IonCube (static for PHP 8.1 – 8.4, static through the 7.2 record layer, runtime-assisted for the 7.x IR)**, **SourceGuardian (ixed)**, and **YAK Pro (Control Flow Flattening & Goto Obfuscation)**, reconstructing clean, valid, and PSR-12 idiomatic PHP source code.
 
 ---
 
@@ -13,7 +13,7 @@ An advanced, reverse-engineering toolkit and unified multi-engine decompiler for
 
 Modern PHP applications often combine binary byte-code encoders with static control-flow obfuscators:
 - **IonCube (PHP 8.1+)**: Encrypted envelopes with XOR-scrambled opcodes, randomized dispatch lanes, and interned string pools referencing dynamic loader DLL symbol tables.
-- **IonCube (PHP 7.x)**: The loader materializes `zend_op_array` structures at request time and keeps the opcode stream XOR-encoded in memory keyed by the request timestamp, so the body blob cannot be replayed statically. Those builds are decoded through the loader itself (see [runtime-assisted 7.x](#5--ioncube-php-7x-runtime-assisted)).
+- **IonCube (PHP 7.x)**: The loader materializes `zend_op_array` structures at request time. For 7.2 that layer is no longer opaque to us — the `sv5` container, the record walker, the opcode mask and the file-level record cipher are all reversed, and the record key is derived from the header, so every `op_array` in the file decodes without executing it. Shipping those records through `decompile.py` still uses the loader (see [ionCube 7.x](#5--ioncube-php-7x)).
 - **SourceGuardian (ixed)**: Multi-layer encrypted containers (Blowfish-CBC + ROL1 checksum + LZO1X compression) wrapping custom serialized Zend bytecode structures without requiring runtime execution.
 - **YAK Pro (Yakpro-Po)**: Aggressive control flow flattening (CFF), state machine trampolines, spaghetti `goto` chains, and hex/octal string scrambling that break standard static analysis and decompilation tools.
 
@@ -82,7 +82,7 @@ Modern PHP applications often combine binary byte-code encoders with static cont
   ```bash
   pip install pefile pytest
   ```
-- **PHP 7.x runtime bundles** (only for ionCube 7.1 – 7.4 inputs): point `IONCUBE_OPCODEDUMP_HOME` at a directory holding the `ic72dump-opcodes` / `ic74dump-opcodes` checkouts, or keep them under `loader/opcodedump` or `scratch/refs`. The 8.1 – 8.4 static path needs nothing beyond Python.
+- **PHP 7.x runtime bundles** (only for ionCube 7.1 – 7.4 inputs through `decompile.py`): point `IONCUBE_OPCODEDUMP_HOME` at a directory holding the `ic72dump-opcodes` / `ic74dump-opcodes` checkouts, or keep them under `loader/opcodedump` or `scratch/refs`. The 8.1 – 8.4 static path and the 7.2 static record tools need nothing beyond Python.
 
 ### Quick Usage
 
@@ -101,6 +101,19 @@ python decompile.py path/to/encoded_file.php -o output/decoded.php
 Pin the target ABI explicitly (otherwise it is inferred from the ionCube header):
 ```bash
 python decompile.py path/to/encoded_file.php --php-version 72
+```
+
+#### Inspect a PHP 7.2 Payload Statically
+No runtime and no key material: the container, the record walker, the opcode mask and the record cipher all run in Python.
+```bash
+# container report (chunking, checksums, MD4, header trailer) + the program blob
+python tools/ic72_static_container.py path/to/encoded_file.php --body-out body72.bin
+
+# whole body: every op_array, opcodes decoded from the record keys
+python tools/ic72_static_dump.py body72.bin --php path/to/encoded_file.php
+
+# just the file-level record, with the key derived from the header
+python tools/ic72_record0.py path/to/encoded_file.php
 ```
 
 #### Batch Decompile an Entire Directory
@@ -157,9 +170,9 @@ The test suite covers IonCube AST reconstruction, SourceGuardian container decod
 python -m pytest tests/
 ```
 
-All 199 test cases pass:
+All 202 test cases pass:
 ```text
-============================= 199 passed in 8.11s ==============================
+============================= 202 passed in 24.86s ==============================
 ```
 
 ---
@@ -169,15 +182,15 @@ All 199 test cases pass:
 - [`decompile.py`](decompile.py) — Unified CLI entry point for scanning, single-file, and directory batch decompilation.
 - [`detector/`](detector/) — Multi-encoder signature scanner and format analyzer.
 - [`engines/`](engines/) — Core decompiler and deobfuscator engines:
-  - [`engines/ioncube/`](engines/ioncube/) — Static IonCube PHP 8.1–8.4 opcode dumper, header parser, and loader symbol resolver (`header.py`, `body.py`, `dumper.py`, `adapter.py`), plus the runtime-assisted PHP 7.x path and its AES-256 port (`runtime_dump.py`, `rijndael.py`).
+  - [`engines/ioncube/`](engines/ioncube/) — Static IonCube PHP 8.1–8.4 opcode dumper, header parser, and loader symbol resolver (`header.py`, `body.py`, `dumper.py`, `adapter.py`), the reversed 7.x primitives (`body72.py`: record cipher, key derivation, PRNG 6), plus the runtime-assisted PHP 7.x path and its AES-256 port (`runtime_dump.py`, `rijndael.py`).
   - [`engines/sourceguardian/`](engines/sourceguardian/) — Static SourceGuardian envelope decryptor, LZO1X inflator, and bytecode IR parser (`container.py`, `bytecode_ir.py`, `lzo1x.py`).
   - [`engines/yakpro/`](engines/yakpro/) — YAK Pro control-flow graph (CFG) restructurer, goto-eliminator, and string de-escaper (`deobfuscator.py`).
-- [`tools/`](tools/) — Reverse-engineering utilities: loader extractor, base64 blob decoder, and the 7.x debugger probes (`ic72_record_guard.py`, `ic72_blob_watch.py`, `ic72_cipher_trace.py`, `ic72_keystream.py`, `ic72_memdump.py`).
+- [`tools/`](tools/) — Reverse-engineering utilities: loader extractor, base64 blob decoder, the static 7.2 pipeline (`ic72_static_container.py`, `ic72_record_walk.py`, `ic72_op_walk.py`, `ic72_opcode_mask.py`, `ic72_record0.py`, `ic72_static_dump.py`), and the runtime 7.x debugger probes (`ic72_record_guard.py`, `ic72_blob_watch.py`, `ic72_cipher_trace.py`, `ic72_keystream.py`, `ic72_memdump.py`).
 - [`docs/`](docs/) — Loader analysis notes: [`ioncube-72-static.md`](docs/ioncube-72-static.md) for the 7.2 static decode map, [`rea-ida.md`](docs/rea-ida.md) for the REA/IDA workflow.
 - [`ioncube-php8-decompiler/`](ioncube-php8-decompiler/) — High-level PHP abstract syntax tree (AST) engine:
   - `src/php_reconstructor/decompiler/` — Opcode handlers, CFG structurer, and optimization passes.
   - `src/php_reconstructor/emitter/` — High-fidelity PHP code emitter.
-- [`tests/`](tests/) — Automated test suite (199 tests).
+- [`tests/`](tests/) — Automated test suite (202 tests).
 
 ---
 
@@ -209,13 +222,16 @@ All 199 test cases pass:
 - [ ] Decryption of bytecode wrappers (`bolt_encrypt` / `boltr_`).
 - [ ] Restoration of native PHP source files from decrypted payloads.
 
-### 5. 🔐 ionCube PHP 7.x (runtime-assisted)
-- [x] Runtime-assisted decode for 7.1 – 7.4: the real loader builds each `zend_op_array`, an in-process dumper walks it, and the result is converted into the shared `icdump-ir-v1` IR (`engines/ioncube/runtime_dump.py`).
+### 5. 🔐 ionCube PHP 7.x
+- [x] Runtime-assisted decode for 7.1 – 7.4: the real loader builds each `zend_op_array`, an in-process dumper walks it, and the result is converted into the shared `icdump-ir-v1` IR (`engines/ioncube/runtime_dump.py`). This remains the shipping path for `decompile.py` on every 7.x input.
 - [x] `--php-version` ABI pinning with header autodetection, and batch/scan support for the 7.x path.
 - [x] Static recovery of the 7.2 text layer: the record parser at `0x6C340` hands `HR+c` payloads to `sub_10065D50`, whose reverse table at `0x10093BC0` decodes the base64 body byte-exactly (9,699 bytes, record magic `0x67A6BF45`).
 - [x] 7.2 header and body verified statically: chunked envelope, `MT4IC` PRNG, MD4 trailer, and both body checksums match.
-- [x] Static 7.2 `sv5` record walker and opcode decoder: the opcode mask is reproduced from each record's key pair (397/397 opcodes equal the runtime dump), and the file-level record cipher (`sub_180001E10`) plus its 16-byte key (`sub_180003570`) are reversed, so all five `op_array`s now decode from the file alone.
+- [x] Static 7.2 `sv5` record walker and opcode decoder: the opcode mask is reproduced from each record's key pair (397/397 opcodes equal the runtime dump), and the file-level record cipher (`sub_180001E10`) plus its 17-byte key (`sub_180003570`) are reversed, so all five `op_array`s now decode from the file alone.
 - [x] Derive the four program key words without a runtime: the loader copies the header size, the record count, `0`, and the trailer's `evaluation_min_raw` licence dword into the context, so the file-level record now decrypts from the file alone. See [`docs/ioncube-72-static.md`](docs/ioncube-72-static.md) (M4.13).
+- [x] Static 7.2 output is verifiable end to end: `python tools/ic72_record0.py sample.php` prints the file-level record with no key input, and `python tools/ic72_static_dump.py body72.bin --php sample.php` decodes all 408 slots (397 function + 11 file-level) with zero unknowns.
+- [ ] Feed the static 7.2 walker into `runtime_dump.to_icdump()` so `decompile.py --php-version 72` emits IR without spawning the loader — the buffer, records, mask and key are all in place; only the IR bridge is missing.
+- [ ] Repeat the static record layer for 7.1, 7.3 and 7.4 loaders (the 7.3/7.4 DLLs are already in [`loader/`](loader/), analysis not started).
 
 ### 6. 🔒 Zend Guard Decompiler
 - [ ] Support for legacy Zend Guard protected archives (`Zend\x00` format).
