@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,18 @@ _SEARCH_ROOTS = (
 
 class RuntimeDumpError(RuntimeError):
     """Raised when the opcode-dump runtime is missing or produced no dump."""
+
+
+# A crashed loader run is not reproducible: the same file that dies once decodes
+# on the next process.  STATUS_HEAP_CORRUPTION (0xC0000374) has been seen inside
+# php.exe with no JSON written, so a crash retries instead of failing the file.
+_DUMP_ATTEMPTS = 3
+_NTSTATUS_FAILURE_FLOOR = 0xC0000000
+
+
+def _is_process_crash(returncode: int) -> bool:
+    """Windows reports a crash as an NTSTATUS code, not a small exit status."""
+    return (returncode & 0xFFFFFFFF) >= _NTSTATUS_FAILURE_FLOOR
 
 
 def _candidate_roots(php_version: int) -> list[Path]:
@@ -88,30 +101,38 @@ def dump_opcodes(source: str | Path, php_version: int, *, timeout: int = 300) ->
 
     source = Path(source).resolve()
     php = root / "runtime" / "php.exe"
+    problem = "no output"
     with tempfile.TemporaryDirectory(prefix="icdump-") as tmp:
         work = Path(tmp) / source.name
         shutil.copyfile(source, work)
-        try:
-            proc = subprocess.run(
-                [str(php), "-c", str(root / "runtime" / "php.ini"),
-                 str(root / "opcodedump.php"), str(work)],
-                cwd=str(root / "runtime"),
-                capture_output=True,
-                text=True,
-                errors="replace",
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeDumpError(f"opcode dump timed out after {timeout}s") from exc
-
         dump_path = work.with_name(work.stem + ".opcodes.json")
-        if not dump_path.is_file():
+        for attempt in range(1, _DUMP_ATTEMPTS + 1):
+            try:
+                proc = subprocess.run(
+                    [str(php), "-c", str(root / "runtime" / "php.ini"),
+                     str(root / "opcodedump.php"), str(work)],
+                    cwd=str(root / "runtime"),
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeDumpError(f"opcode dump timed out after {timeout}s") from exc
+
+            if dump_path.is_file():
+                return json.loads(dump_path.read_text(encoding="utf-8"))
+
             tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
-            raise RuntimeDumpError(
-                "opcode dump produced no JSON (exit %d): %s"
-                % (proc.returncode, " | ".join(tail) or "no output")
+            problem = "opcode dump produced no JSON (exit %d / 0x%08X): %s" % (
+                proc.returncode,
+                proc.returncode & 0xFFFFFFFF,
+                " | ".join(tail) or "no output",
             )
-        return json.loads(dump_path.read_text(encoding="utf-8"))
+            if not _is_process_crash(proc.returncode) or attempt == _DUMP_ATTEMPTS:
+                break
+            time.sleep(0.2 * attempt)
+    raise RuntimeDumpError(problem)
 
 
 def _plain(value: Any) -> Any:

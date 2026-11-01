@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from pathlib import Path
+
 from engines.ioncube.runtime_dump import find_runtime, to_icdump
 
 
@@ -166,6 +168,56 @@ def test_runtime_roundtrip_keeps_cv_names(tmp_path):
     ]
     assert "data" in names
     assert any(oa["kind"] == "main" for oa in icdump["op_arrays"].values())
+
+
+def _crashing_dumper(monkeypatch, *, crashes: int):
+    """Make the dumper process crash *crashes* times, then write a dump."""
+    from engines.ioncube import runtime_dump
+
+    calls = []
+
+    class Result:
+        returncode = 0xC0000374
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) > crashes:
+            target = Path(cmd[-1])
+            dump_path = target.with_name(target.stem + ".opcodes.json")
+            dump_path.write_text('{"attempt": %d}' % len(calls), encoding="utf-8")
+            Result.returncode = 0
+        return Result()
+
+    monkeypatch.setattr(runtime_dump.subprocess, "run", fake_run)
+    return calls
+
+
+@pytest.mark.skipif(find_runtime(72) is None, reason="no PHP 7.2 opcode-dump runtime installed")
+def test_a_crashed_dump_process_is_retried(tmp_path, monkeypatch):
+    from engines.ioncube.runtime_dump import dump_opcodes
+
+    calls = _crashing_dumper(monkeypatch, crashes=1)
+    source = tmp_path / "sample.php"
+    source.write_text("<?php echo 1;", encoding="utf-8")
+
+    assert dump_opcodes(source, 72) == {"attempt": 2}
+    assert len(calls) == 2
+
+
+@pytest.mark.skipif(find_runtime(72) is None, reason="no PHP 7.2 opcode-dump runtime installed")
+def test_a_dump_that_keeps_crashing_gives_up_with_the_code(tmp_path, monkeypatch):
+    from engines.ioncube.runtime_dump import RuntimeDumpError, dump_opcodes
+
+    calls = _crashing_dumper(monkeypatch, crashes=99)
+    source = tmp_path / "sample.php"
+    source.write_text("<?php echo 1;", encoding="utf-8")
+
+    with pytest.raises(RuntimeDumpError) as excinfo:
+        dump_opcodes(source, 72)
+    assert len(calls) == 3
+    assert "0xc0000374" in str(excinfo.value).lower()
 
 
 def _branch(index, name, target, op1=None, result=None):
