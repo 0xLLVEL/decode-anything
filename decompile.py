@@ -1436,6 +1436,7 @@ def main() -> int:
         )
         scan_parser.add_argument("path", type=Path, help="Project directory or PHP file to scan")
         scan_parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+        scan_parser.add_argument("--no-progress", action="store_true", help="Hide the scan progress bar")
         scan_parser.add_argument("-d", "--decompile", action="store_true", help="Auto-decompile detected ionCube files")
         scan_parser.add_argument("-o", "--output", type=Path, help="Output directory when decompiling")
         scan_parser.add_argument("--php-version", type=int, choices=(72, 73, 74, 81, 82, 83, 84))
@@ -1446,7 +1447,7 @@ def main() -> int:
             print(f"Error: path not found: {args.path}", file=sys.stderr)
             return 1
 
-        report = scan_project(args.path)
+        report = scan_project(args.path, progress=not (args.json or args.no_progress))
         print_scan_report(report, as_json=args.json)
 
         if args.decompile and report.encoded_count > 0:
@@ -1488,6 +1489,7 @@ def main() -> int:
     parser.add_argument("-o", "--output", type=Path, help="Output file or directory (preserves tree structure)")
     parser.add_argument("--scan", action="store_true", help="Scan target for encoded/obfuscated files instead of decompiling")
     parser.add_argument("--json", action="store_true", help="Output results in JSON format (when used with --scan)")
+    parser.add_argument("--no-progress", action="store_true", help="Hide the scan progress bar")
     parser.add_argument("--in-place", action="store_true", help="Overwrite IonCube files in place with decompiled PHP")
     parser.add_argument("--no-backup", action="store_true", help="Do not create .bak files when using --in-place")
     parser.add_argument("--no-copy-other", action="store_true", help="Do not copy non-IonCube files to output directory")
@@ -1503,7 +1505,7 @@ def main() -> int:
         return 1
 
     if args.scan:
-        report = scan_project(input_path)
+        report = scan_project(input_path, progress=not (args.json or args.no_progress))
         print_scan_report(report, as_json=args.json)
         return 0
 
