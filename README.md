@@ -1,6 +1,6 @@
 # Decode-Anything: Unified PHP Decompiler & Deobfuscator
 
-[![Python Tests](https://img.shields.io/badge/tests-202%20passed-brightgreen.svg)](tests/)
+[![Python Tests](https://img.shields.io/badge/tests-214%20passed-brightgreen.svg)](tests/)
 [![Target PHP](https://img.shields.io/badge/PHP-7.2%20%E2%80%93%208.4-blue.svg)](https://php.net)
 [![Supported](https://img.shields.io/badge/Encoders-ionCube%20%7C%20SourceGuardian%20%7C%20YAK%20Pro-purple.svg)](https://github.com/0xLLVEL/decode-anything)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -170,9 +170,9 @@ The test suite covers IonCube AST reconstruction, SourceGuardian container decod
 python -m pytest tests/
 ```
 
-All 202 test cases pass:
+All 214 test cases pass:
 ```text
-============================= 202 passed in 24.86s ==============================
+============================= 214 passed in 23.22s ==============================
 ```
 
 ---
@@ -191,7 +191,7 @@ All 202 test cases pass:
 - [`ioncube-php8-decompiler/`](ioncube-php8-decompiler/) — High-level PHP abstract syntax tree (AST) engine:
   - `src/php_reconstructor/decompiler/` — Opcode handlers, CFG structurer, and optimization passes.
   - `src/php_reconstructor/emitter/` — High-fidelity PHP code emitter.
-- [`tests/`](tests/) — Automated test suite (202 tests).
+- [`tests/`](tests/) — Automated test suite (214 tests).
 
 ---
 
