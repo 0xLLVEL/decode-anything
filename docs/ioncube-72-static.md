@@ -158,7 +158,11 @@ OPCODEDUMP_STATIC_JUMP_MATERIALIZE=1
 OPCODEDUMP_JUMP_MATERIALIZE_METHODS=*
 ```
 
-`engines/ioncube/runtime_dump.py` sets both for every dump.  The extension then routes each jump
+`engines/ioncube/runtime_dump.py` sets both for every dump.  (Local variable names are a
+separate matter: the 7.2 loader keeps each one as a 23-byte encrypted blob whose length no longer
+tracks the identifier, so the encoder mangled the name before encrypting it.  The dumper hex-escapes
+that blob into `_obfuscated_<hex>_`, and `engines/ioncube/adapter.py` maps the placeholders to stable
+`var<N>` names per op_array — the original identifier is not recoverable from the file.)  The extension then routes each jump
 opline through the loader's materializer, which restores the real target and flags the opline with a
 spare `extended_value` bit; the bridge drops that bit and skips its own fallback repair for the
 oplines that were materialized.  On `contacts.php` this is the difference between 20 and 44

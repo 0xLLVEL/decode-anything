@@ -11,8 +11,46 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+
+# ionCube 7.2 keeps a local variable's name as a 23-byte encrypted blob.  The
+# encoder mangles the identifiers before that, so the length no longer carries
+# the original: nothing on disk can turn one of these back into a real name.
+_IC_OBFUSCATED_NAME = re.compile(r"_obfuscated_(?:[0-9A-F]{2})+_")
+
+
+def _readable_variable_names(
+    variables: list[str], opcodes: list[dict[str, Any]]
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Replace the encrypted-name placeholders with stable readable ones.
+
+    The same blob always denotes the same slot, so the mapping is per op_array
+    and both the variable table and every ``cv_name`` operand follow it.
+    """
+    renames: dict[str, str] = {}
+    taken = {name for name in variables if not _IC_OBFUSCATED_NAME.search(name)}
+
+    def rename(name: Any) -> Any:
+        if not isinstance(name, str) or not _IC_OBFUSCATED_NAME.search(name):
+            return name
+        if name not in renames:
+            candidate = f"var{len(renames) + 1}"
+            while candidate in taken:
+                candidate += "_"
+            taken.add(candidate)
+            renames[name] = candidate
+        return renames[name]
+
+    new_variables = [rename(name) for name in variables]
+    for op in opcodes:
+        for key in ("op1", "op2", "result"):
+            operand = op.get(key)
+            if isinstance(operand, dict):
+                operand["cv_name"] = rename(operand.get("cv_name"))
+    return new_variables, opcodes
 
 
 def safe_value(value: Any) -> dict[str, Any]:
@@ -117,6 +155,7 @@ def build_op_array_entry(
 
     literals_raw = raw.get("literals", [])
     opcodes = _convert_opcodes(raw.get("opcodes", []), literals_raw)
+    variables, opcodes = _readable_variable_names(variables, opcodes)
     live_range = _calc_live_ranges(opcodes)
 
     op_array: dict[str, Any] = {
