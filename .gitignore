@@ -71,3 +71,4 @@ loader/php72-*/
 loader/refs/
 loader/*.zip
 
+*.i64
