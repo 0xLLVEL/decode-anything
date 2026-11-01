@@ -283,3 +283,53 @@ def test_class_methods_become_methods_not_top_level_functions():
     assert icdump["class_index"]["class:4d6f64"]["methods"] == {
         "Run": "class:4d6f64:method:72756e"
     }
+
+
+def test_php8_operand_numbering_is_read_from_the_reported_name():
+    """The 7.4 dump uses PHP 8 kinds: IS_CV = 8, IS_UNUSED = 0.
+
+    Both builds report the same name, so a CV stays a CV even though the raw
+    number no longer matches the PHP 7 layout the bit test was written for.
+    """
+
+    ir = {
+        "format": "ic72dump-ir-v3",
+        "op_arrays": {
+            "main": {
+                "id": "main",
+                "kind": "main",
+                "function_name": None,
+                "fn_flags": 0,
+                "line_start": 1,
+                "line_end": 2,
+                "last_var": 1,
+                "T": 0,
+                "vars": [_safe("i")],
+                "arg_info": [],
+                "literals": [],
+                "opcodes": [
+                    _op(
+                        0,
+                        "ZEND_ASSIGN",
+                        op1={
+                            "type": 8,
+                            "type_name": "IS_CV",
+                            "num": 48,
+                            "cv_name": "i",
+                            "cv_index": 0,
+                        },
+                        op2={"type": 1, "type_name": "IS_CONST", "num": 0, "constant": 0},
+                        result={"type": 0, "type_name": "IS_UNUSED", "num": 3},
+                    )
+                ],
+            }
+        },
+        "function_index": {},
+        "class_index": {},
+    }
+
+    op = to_icdump(ir, "demo.php")["op_arrays"]["main"]["opcodes"][0]
+
+    assert op["op1"]["type_name"] == "IS_CV"
+    assert op["op1"]["cv_name"] == "i"
+    assert op["result"]["type_name"] == "IS_UNUSED"

@@ -282,8 +282,16 @@ _ZEND_TO_IC_TYPE = {
 _IC_TYPE_NAMES = {0: "IS_UNUSED", 1: "IS_CONST", 2: "IS_TMP_VAR", 4: "IS_VAR", 8: "IS_CV"}
 
 
-def _ic_operand_type(zend_type: int) -> int:
-    """Map a zend operand kind (IS_CV = 16) onto our encoding (IS_CV = 8)."""
+def _ic_operand_type(zend_type: int, type_name: str | None = None) -> int:
+    """Map a zend operand kind onto our encoding (IS_CV = 8).
+
+    The 7.2 dumper reports the PHP 7 numbering (IS_UNUSED = 8, IS_CV = 16) while
+    the 7.4 build already reports PHP 8 numbering (IS_UNUSED = 0, IS_CV = 8), so
+    the name the dumper attaches is the only field that means the same thing in
+    both. Honour it and fall back to the bit test only when it is absent.
+    """
+    if type_name in _ZEND_TO_IC_TYPE:
+        return _ZEND_TO_IC_TYPE[type_name]
     if zend_type & 16:
         return 8
     if zend_type & 8:
@@ -300,7 +308,9 @@ def _ic_operand_type(zend_type: int) -> int:
 def _raw_operand(operand: Any, jump_targets: set[int]) -> dict[str, Any]:
     if not isinstance(operand, dict):
         return {}
-    operand_type = _ic_operand_type(operand.get("type") or 0)
+    operand_type = _ic_operand_type(
+        operand.get("type") or 0, operand.get("type_name")
+    )
     raw: dict[str, Any] = {
         "type": operand_type,
         "type_name": _IC_TYPE_NAMES[operand_type],
