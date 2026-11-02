@@ -110,6 +110,71 @@ Class records are separate and cleaner: `02 00 02 00 02`, a u32 length, then the
 class name — the sample has one, `ModelMarketingContacts`, and the runtime dump's
 `class_index` also carries `Model` as an alias recorded right after it.
 
+### The record builder (`sub_180097AA0`)
+
+The scan above finds records but never reads their instructions. The function that
+turns a record into a `zend_op_array` is reachable now:
+
+| Step | Address | Role |
+|---|---|---|
+| compiler hook | `0x1800987C0` | per-op_array entry, called from the compile path |
+| stream feeder | `0x180098570` | allocates the mask array for the record |
+| record builder | `0x180097AA0` | decodes words into 32-byte op records |
+| mask generator candidates | `0x1800953A3`, `0x1800953E0` | 7.2's two-word multiply-add, same constants |
+| generator state init | `0x180095380` | `state[0]=s0`, `state[1]=s1` |
+| string/mask decryptor | `0x180001F40` | seeded keystream XOR over a buffer |
+
+`sub_180097AA0(ctx, op_array, stream)` walks the word array one entry per
+instruction. With `ctx->encoder_major >= 6` and `ctx->php_minor >= 74` (both true
+here) every instruction consumes **two** words:
+
+```
+v21  = words[i++]                 # opcode word
+rec.qword0 = words[i++]           # 7.4-only extended word (stored at +0x00)
+raw  = v21 & 0xFF                 # stored opcode byte
+```
+
+and the rest of the word is handed out by bit:
+
+| Bits of `v21` | Meaning | Record slot |
+|---|---|---|
+| `0x100` | aux group present | `+0x31` tag, `+0x10..13` payload (5 bytes) |
+| `0x200` | aux group present | `+0x29` tag, `+0x08..0B` payload (5 bytes) |
+| `0x400` | aux group present | `+0x30` tag, `+0x0C..0F` payload (5 bytes) |
+| `0x1800 == 0x0800` | cache slot | `+0x14 = 1` |
+| `0x1800 == 0x1000` | cache slot | `+0x14 = 60` |
+| `0x1800 == 0x1800` | cache slot | `+0x14 =` next word |
+| `0x8000` file flag | line suppressed | `+0x18 = 0` |
+| else | line | `+0x18 = v21 >> 16`, or next word when that is `0xFFFF` |
+
+So the record is 32 bytes per instruction: `+0x00` extended qword, `+0x08` /
+`+0x0C` / `+0x10` the three aux payloads, `+0x14` cache slot, `+0x18` line,
+`+0x1C` the stored opcode byte.
+
+### The opcode mask
+
+The stored byte is not the opcode. `sub_180098570` allocates **`ops + 1` dwords**
+of mask material and the builder XORs the byte at `mask[op_index]` into the
+opcode twice (once inside the `ctx->flags & 0x80` block, once unconditionally for
+`encoder_major >= 6`), with the 7.2 escape still in place:
+
+```
+if (raw == (mask[i] ^ 0x95)) mask[i] = 0     # slot decodes to the stored byte
+opcode = raw ^ mask[i]                       # after the escape, ^ mask[i] again
+```
+
+The mask values are **read from the program stream**, not generated: the slots
+come from `sub_180094B40`, which pulls one value from the record's byte stream
+and XORs its low byte with a byte of a wrapping keystream table
+(`reader+0x30` pointer, `+0x38` length, `+0x40` cursor). The bytes of that dword
+array are the per-slot mask, i.e. slot `i` is the byte at index `i` of the
+stream — the same `0x95`-guarded byte-cursor scheme the 7.2 loader uses.
+
+The same two-word multiply-add generator as 7.2 does exist in this build
+(`0x1800953A3`, constants `0x7689` / `0x4650`, `ROL32(s1,16) + s0`, then
+`^ bytecode_xor_key` at `0x1800953E0`), but on the 7.4 path it is only reached
+through `sub_180001F40`, the seeded buffer decryptor — not for the opcode mask.
+
 ### What is still masked
 
 The instruction stream starts at `+0x90` and is **not** plain Zend words. For
@@ -123,20 +188,23 @@ ee 1f 00 00  43 a9 2d 15  14 00 00 00  9b 07 00 00
 
 Small counters alternate with high-entropy dwords, i.e. the same split the 7.2
 build shows: a per-op key array plus XOR-masked opcode bytes (`0x95` is the "no
-key" escape there, and `sub_18009E8B0` XORs by op index). For 7.4 the equivalent
-pair — the counted reads that pull `opcode_count`, the word array, and the 5-byte
-per-op aux array — has not been located yet, so `tools/ic74_static_dump.py`
-deliberately reports structure only.
+key" escape there, and `sub_18009E8B0` XORs by op index). The 7.4 side of that
+split is `sub_180097AA0`, mapped above: the counters are opcode words, the
+high-entropy dwords are the 7.4-only extended word of each instruction, and the
+mask that turns one into the other is still to be located in the stream, so
+`tools/ic74_static_dump.py` deliberately reports structure only.
 
 ## Open items, in order
 
-1. Locate the 7.4 record builder: the function chain the compile hook reaches
-   after the container gates. The extension entry (`0x1801bfe30`) and MINIT
-   (`0x18006d3b0`) are the entry points; the compile hook is installed from
-   MINIT, and the 7.2 chain (`sub_18009ED60` counted reads → `sub_18009F1B0`
-   expander) is the shape to look for, not the addresses.
-2. Port the word grammar: `[value:u8][class:u8][line:u16]`, per-op XOR key indexed
-   by op index, `0x95` escape, literal index from the aux byte.
+1. Pin the stream offset of the mask dwords. The builder's algorithm is fully
+   known; what is left is where in the record `sub_180098570` starts reading its
+   `ops + 1` values, and whether the wrapping keystream table it XORs them with
+   is the decrypted header or a per-record table. Cross-check: slot bytes
+   recovered from `contacts.opcodes.json` (`raw ^ opcode`) must show up in the
+   body once that keystream is applied.
+2. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
+   the table above, and verify that the parse lands exactly on the record's
+   literal table for all 112 entries.
 3. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
    document so `decompile.py` can run without the runtime bundle.
 
@@ -146,4 +214,5 @@ deliberately reports structure only.
 |---|---|
 | `tools/ic74_static_dump.py` | container + body + op_array field block, `--truth` diff |
 | `tools/ic74_rea.py` | thin `rea --format json` wrapper that caches each IDA answer under `scratch/ida74/` |
+| `scratch/ida74/f_builderA.c` | decompiler output for the record builder, kept as evidence |
 | `scratch/ida_start_mcp.py` | starts the ida-pro-mcp plugin server without the menu (IDA `-S` script) |

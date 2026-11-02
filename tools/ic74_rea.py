@@ -54,14 +54,30 @@ def main(argv: list[str]) -> int:
         payload = run(["search", subject, *argv[3:], "--mode", "literal"])
     else:
         payload = run([verb, subject, *argv[3:]])
-    slug = "_".join(part.strip("0x") for part in (verb, subject))
+    clean = subject[2:] if subject.lower().startswith("0x") else subject
+    slug = f"{verb}_{clean}"
     slug = "".join(c if c.isalnum() or c in "._-" else "_" for c in slug)
     (CACHE / f"{slug}.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
     result = payload.get("normalized_result") or payload.get("raw_result")
+    if verb == "decompile":
+        code = _pseudocode(payload)
+        if code:
+            (CACHE / f"{slug}.c").write_text(code, encoding="utf-8")
+            print(code)
+            return 0
     text = json.dumps(result, indent=1)
     print(text[:8000])
     return 0
+
+
+def _pseudocode(payload: dict) -> str:
+    """Pull the decompiler text out of the adapter's observation list."""
+
+    for observation in (payload.get("raw_result") or {}).get("observations", []):
+        if observation.get("tool") == "decompile_function" and isinstance(observation.get("result"), str):
+            return observation["result"]
+    return ""
 
 
 if __name__ == "__main__":
