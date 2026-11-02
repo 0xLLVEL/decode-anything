@@ -24,6 +24,7 @@ from tools.ic74_static_dump import (  # noqa: E402
     scan_body,
     walk_ops,
 )
+from tools.ic74_mask import find_seed, predict, stored_bytes  # noqa: E402
 
 # Mask stream for ``getTotalSendGroups``, recovered as ``stored_byte ^ opcode``
 # from the runtime dump (docs/ioncube-74-static.md) and pinned for the walk.
@@ -167,6 +168,65 @@ def test_every_op_block_start_matches_the_runtime_slot_pattern(report):
             compared += 1
 
     assert compared == 1731
+
+
+def test_mask_stream_decodes_a_record_from_its_key_pair(report):
+    """`getTotalSendGroups` is masked by `A[i] ^ A[i + ops + 2]` from one pair.
+
+    The pair sits at body `0x2447`, ahead of the record, and the stream it starts
+    reproduces all twelve runtime opcodes - no runtime, no loader.
+    """
+
+    body = report["body"]
+    xor_key = 0x00363FA4
+    entry = next(item for item in report["scanned"]["entries"] if item["name"] == "getTotalSendGroups")
+    start = op_block_start(body, entry["end"])
+    mask = predict(0x1BB0, 0x59EA, xor_key, entry["opcodes"])
+    opcodes = [stored ^ mask[i] for i, stored in enumerate(stored_bytes(body, start, 12))]
+
+    assert opcodes == [
+        0x52, 0x70, 0x63, 0x0A, 0x04, 0x74, 0x3C, 0x02, 0x52, 0x51, 0x3E, 0x3E,
+    ]
+    hidden = bytes(stored ^ want for stored, want in zip(stored_bytes(body, start, 12), opcodes))
+    assert hidden == bytes(
+        [0x90, 0x2B, 0x8D, 0x91, 0x6E, 0xC2, 0xB7, 0x8A, 0x1A, 0xD4, 0xC2, 0xB2]
+    )
+    assert find_seed(body, entry["offset"], 12, xor_key, hidden, 1400) == (
+        0x2447, 0x1BB0, 0x59EA,
+    )
+
+
+def test_most_records_carry_their_key_pair_in_the_body(report):
+    """92 of 112 records decode from a pair stored ahead of the record."""
+
+    truth = json.loads(TRUTH.read_text(encoding="utf-8"))
+    expected: dict[str, list[int]] = {}
+    for item in (truth.get("op_arrays") or {}).values():
+        name = item.get("function_name")
+        name = name.get("value") if isinstance(name, dict) else name
+        if name:
+            expected[name] = [op["opcode"] for op in item.get("opcodes") or []]
+
+    body = report["body"]
+    xor_key = 0x00363FA4
+    recovered = checked = 0
+    for entry in report["scanned"]["entries"]:
+        want = expected.get(entry["name"])
+        if not want or len(want) != entry["opcodes"]:
+            continue
+        checked += 1
+        start = op_block_start(body, entry["end"])
+        stored = stored_bytes(body, start, entry["opcodes"])
+        target = bytes(stored[i] ^ want[i] for i in range(len(want)))
+        hit = find_seed(body, entry["offset"], entry["opcodes"], xor_key, target, 1400)
+        if hit is None:
+            continue
+        mask = predict(hit[1], hit[2], xor_key, entry["opcodes"])
+        if [stored[i] ^ mask[i] for i in range(len(want))] == want:
+            recovered += 1
+
+    assert checked == 112
+    assert recovered == 92
 
 
 def test_json_report_is_serialisable(tmp_path, report):

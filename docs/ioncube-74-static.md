@@ -167,44 +167,60 @@ The functions that sit on the same path, read in this order:
 So the record carries two parallel arrays, the word block and the 5-byte aux
 block, plus a length-prefixed string (the doc comment) ahead of the field block.
 
-### The opcode mask
+### The opcode mask — found
 
-The stored byte is not the opcode. `sub_180098570` allocates **`ops + 1` dwords**
-of mask material and the builder XORs the byte at `mask[op_index]` into the
-opcode twice (once inside the `ctx->flags & 0x80` block, once unconditionally for
-`encoder_major >= 6`), with the 7.2 escape still in place:
-
-```
-if (raw == (mask[i] ^ 0x95)) mask[i] = 0     # slot decodes to the stored byte
-opcode = raw ^ mask[i]                       # after the escape, ^ mask[i] again
-```
-
-The slots come from `sub_180094B40`, which pulls one value through the reader
-and XORs its low byte with a byte of a wrapping keystream table (`reader+0x30`
-pointer, `+0x38` length, `+0x40` cursor), and slot `i` of the mask is the byte at
-index `i` of the resulting dword array — the same `0x95`-guarded byte cursor the
-7.2 loader uses.
-
-That material is **not stored in the body**. Recovering the twelve slots for
-`getTotalSendGroups` from the oracle (`raw ^ opcode` over the parse below) gives
+The stored byte is not the opcode. `sub_180098570` allocates **`ops + 1` words**
+of mask material and the builder reads **two different bytes of it** per
+instruction, both from the same byte cursor:
 
 ```
-90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2
+raw    = word & 0xFF                              # stored opcode byte
+A      = mask array, bytes 0 .. 4*(ops+1)-1
+second = A[i + ops + 0x02]                        # 0x180097d00
+if raw == (second ^ 0x95): A[i] = 0               # 7.2 escape, now on A[i]
+opcode = raw ^ A[i] ^ second                      # major >= 6: two XORs
 ```
 
-i.e. three dwords `0x918d2b90 0x8ab7c26e 0xb2c2d41a` (matching the `--truth`
-opcode list exactly, 12/12). No three-byte window of that sequence appears
-anywhere in the body, raw or `^ 0x95`, so the values are produced, not read.
+The `+0x02` in that index is the only per-file constant in it
+(`ctx->encoder_major >= 6` takes the two-XOR branch; the second index is
+`i + ops + *(ctx->info + 192)`). So what a record hides is the xor of two bytes
+of one generated stream, `A[i] ^ A[i + ops + 2]`, and the mask array is
+4 * (ops + 1) bytes long because the two reads overlap.
 
-The two-word multiply-add generator from 7.2 is present in this build
-(`0x1800953A3`, constants `0x7689` / `0x4650`, `ROL32(s1,16) + s0`, then
-`^ bytecode_xor_key` at `0x1800953E0`), and `sub_180001F40` shows the idiom the
-7.4 path uses for generated streams: `state = sub_1800955E0(kind)`, seeds from
-the two 32-bit hashes `sub_1800076E0` / `sub_180007730` over a key buffer, then
-one generator word per output byte. The seed for a record's mask is what still
-has to be pinned; the per-record seeds are not the `key1`/`key2` pair 7.2 uses,
-and brute-forcing every dword pair within ±512 bytes of the record head against
-the known mask bytes finds nothing.
+That stream **is** the 7.2 two-word multiply-add generator
+(`0x180095390` / `0x1800953E0`, constants `0x7689` / `0x4650`,
+`ROL16(s1) + s0`, then `^ bytecode_xor_key`), and the pair it starts from is
+stored in the body. For `getTotalSendGroups` the pair sits at body `0x2447`:
+
+```
+0x2447   b0 1b 00 00   ea 59 00 00        s0 = 0x1BB0, s1 = 0x59EA
+0x24b8   "gettotalsendgroups"             record
+0x255b   word block
+```
+
+and `mask_stream(0x1BB0, 0x59EA, 0x00363FA4)` reproduces all twelve opcodes
+(`52 70 63 0a 04 74 3c 02 52 51 3e 3e`) with no runtime at all. The twelve
+hidden bytes are still `90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2`, but they are the
+xor of two stream bytes, which is why no window of the stream ever contains
+them and why their distribution is flat.
+
+Measured over the whole sample (`tools/ic74_mask.py --truth`): **92 of 112**
+records decode from a pair stored in the body before the record, every masked
+byte included. The pair is not at a fixed distance — it sits anywhere in the
+113..1400 bytes ahead of the record, which is what a `--window 1400` search
+covers. The other 20 take their seed from outside the record stream: no dword
+pair anywhere in the body predicts their mask, so the seed has to come from a
+field the scan does not yet read (a class-level or file-level key).
+
+On the reader side two generators exist for these states, `sub_1800955E0(kind)`:
+kind 4 is a 624-word MT19937 pool seeded through `sub_180094BA0`'s `69069`
+recurrence (`0x9908B0DF` matrix, `sub_180094CD0` twist), kind 5 is the 4096-word
+MT4IC pool (`0x10DCD`, carry `0x495E`, `sub_180095110`). A per-record state is
+seeded from one dword read at `0x18009A754`-equivalent (`sub_180094B10`, which
+calls the state's seed slot), and can additionally be xored with a wrapping
+table installed by `sub_180094AF0` when a licence key fills `qword_1801C2440`
+(`sub_1800072D0` → `sub_180006EB0`). Neither is needed for this sample: the
+recovered stream is the multiply-add one with the table slot empty.
 
 ### What is still masked
 
@@ -278,20 +294,14 @@ of the record, `tools/ic74_static_dump.py` reports structure only.
 
 ## Open items, in order
 
-1. Pin the mask generator's seed. The builder's algorithm and the twelve mask
-   bytes of `getTotalSendGroups` are known, so the seed can be tested directly:
-   any candidate pair must produce `90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2` before
-   it is believed.
-
-   What is already ruled out: the material is not in the body (no three-byte
-   window occurs raw or `^ 0x95`); it is not periodic (no period up to 300 over
-   the 6061 recovered bytes); and it is not 7.2's multiply-add generator, whose
-   output caps the top byte at `0xBC` while the recovered dwords are uniform over
-   `0x00..0xFF`. The reader state that produces it lives at `ctx + 40` with the
-   stream function at `+24` and a wrapping keystream table at `+48`/`+56`/`+64`;
-   finding what fills that table is the way in.
-2. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
-   the table above, once (1) is settled.
+1. Locate the seed pair for every record. 92 of 112 are reachable by scanning
+   the body ahead of the record; the other 20 (including `editSendGroup`,
+   `addNewsletters` and `getEmailsFromSqlManual`) have no dword pair anywhere in
+   the body that predicts their mask, so their seed is derived from a field
+   outside the record stream. That is the only missing input left.
+2. Port the word grammar plus `tools/ic74_mask.py` into
+   `tools/ic74_static_dump.py` (`--opcodes`), now that the mask model is pinned
+   for the records whose pair is in the body.
 3. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
    document so `decompile.py` can run without the runtime bundle.
 
@@ -300,6 +310,7 @@ of the record, `tools/ic74_static_dump.py` reports structure only.
 | Tool | Use |
 |---|---|
 | `tools/ic74_static_dump.py` | container + body + op_array field block, `--truth` diff |
+| `tools/ic74_mask.py` | mask stream from a stored key pair, `--truth` sweep, `--seed` decode |
 | `tools/ic74_rea.py` | thin `rea --format json` wrapper that caches each IDA answer under `scratch/ida74/` |
 | `scratch/ida74/f_builderA.c` | decompiler output for the record builder, kept as evidence |
 | `scratch/ida_start_mcp.py` | starts the ida-pro-mcp plugin server without the menu (IDA `-S` script) |
