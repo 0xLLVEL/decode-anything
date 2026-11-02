@@ -24,7 +24,13 @@ from tools.ic74_static_dump import (  # noqa: E402
     scan_body,
     walk_ops,
 )
-from tools.ic74_mask import find_seed, predict, stored_bytes  # noqa: E402
+from tools.ic74_mask import (  # noqa: E402
+    find_seed,
+    key_stubs,
+    predict,
+    record_opcodes,
+    stored_bytes,
+)
 
 # Mask stream for ``getTotalSendGroups``, recovered as ``stored_byte ^ opcode``
 # from the runtime dump (docs/ioncube-74-static.md) and pinned for the walk.
@@ -196,18 +202,14 @@ def test_mask_stream_decodes_a_record_from_its_key_pair(report):
     )
 
 
-MISSES = {
-    "editSendGroup", "addNewsletters", "getEmailsFromSqlManual",
-    "getTotalNewsletters", "saveEmailsToCron", "getCronLogs", "getMessageSend",
-    "getCompleteDataSend", "getProductsToSend", "delViewsSend",
-    "getEmailCustomers", "getClients", "getEmailsByOrdereds",
-    "getShopCountries", "getTemplates", "addTemplate", "markEmailReqreview",
-    "getPurchasedsProducts", "installMailpro", "getLicense",
-}
+def test_every_record_decodes_from_its_own_key_stub(report):
+    """All 112 records, all 6061 opcodes, read out of the body alone.
 
-
-def test_most_records_carry_their_key_pair_in_the_body(report):
-    """92 of 112 records decode from a pair stored ahead of the record."""
+    The pair is not searched for: each record owns a stub shaped
+    ``[record id][s0][s1][8 zero bytes]`` and the id at ``+0x00`` of the field
+    block is what binds it. 27 instructions double-XOR to the ``0x95`` sentinel
+    and take the escape, where the ``A[i]`` term is dropped.
+    """
 
     truth = json.loads(TRUTH.read_text(encoding="utf-8"))
     expected: dict[str, list[int]] = {}
@@ -219,27 +221,41 @@ def test_most_records_carry_their_key_pair_in_the_body(report):
 
     body = report["body"]
     xor_key = 0x00363FA4
-    recovered = checked = 0
-    missing: set[str] = set()
+    index = key_stubs(body)
+    decoded = escapes = 0
+    total = 0
+    unseeded: set[str] = set()
     for entry in report["scanned"]["entries"]:
-        want = expected.get(entry["name"])
-        if not want or len(want) != entry["opcodes"]:
+        want = expected[entry["name"]]
+        opcodes, taken, stub = record_opcodes(body, entry, xor_key, index)
+        if stub is None:
+            unseeded.add(entry["name"])
             continue
-        checked += 1
-        start = op_block_start(body, entry["end"])
-        stored = stored_bytes(body, start, entry["opcodes"])
-        target = bytes(stored[i] ^ want[i] for i in range(len(want)))
-        hit = find_seed(body, entry["offset"], entry["opcodes"], xor_key, target, 1400)
-        if hit is None:
-            missing.add(entry["name"])
-            continue
-        mask = predict(hit[1], hit[2], xor_key, entry["opcodes"])
-        if [stored[i] ^ mask[i] for i in range(len(want))] == want:
-            recovered += 1
+        assert opcodes == want, entry["name"]
+        decoded += 1
+        escapes += taken
+        total += len(opcodes)
 
-    assert checked == 112
-    assert recovered == 92
-    assert missing == MISSES
+    assert unseeded == set()
+    assert decoded == 112
+    assert total == 6061
+    assert escapes == 27
+
+
+def test_compare_with_truth_matches_every_opcode_stream(report):
+    header, body = decode_body(SAMPLE)
+    xor_key = int(str(header["initial_header"]["bytecode_xor_key"]), 0)
+    index = key_stubs(body)
+    entries = [dict(entry) for entry in report["scanned"]["entries"]]
+    for entry in entries:
+        opcodes, _, _ = record_opcodes(body, entry, xor_key, index)
+        entry["opcode_bytes"] = opcodes
+
+    result = compare_with_truth({"entries": entries}, TRUTH)
+
+    assert result["matched"] == 112
+    assert result["mismatched"] == []
+    assert result["opcode_streams_matched"] == 112
 
 
 def test_json_report_is_serialisable(tmp_path, report):
