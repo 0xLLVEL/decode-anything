@@ -34,6 +34,7 @@ class RangeDecompiler:
         self.ctx = ctx
         self.ops = ctx.ops
         self._active_try_catches: set[int] = set()
+        self._active_finally_ops: set[int] = set()
 
     # -- public entry --------------------------------------------------------
 
@@ -103,6 +104,11 @@ class RangeDecompiler:
         if name == "ZEND_CATCH":
             # Reached only outside try/catch carving; skip its body region.
             self.ctx.emit(i, php.OpcodeComment(i, name, "unstructured catch"))
+            return i + 1
+        if name == "ZEND_FAST_CALL" and self._active_finally_ops.intersection(op.jump_targets):
+            # The guard that runs a finally block around a return statement.
+            return i + 1
+        if name == "ZEND_FAST_RET" and self._active_finally_ops:
             return i + 1
 
         handler = get_handler(name)
@@ -804,50 +810,105 @@ class RangeDecompiler:
                 e
                 for e in self.ctx.op_array.try_catch
                 if e.try_op == i
-                and e.catch_op is not None
-                and i < e.catch_op <= end
                 and id(e) not in self._active_try_catches
-                and e.catch_op < len(self.ops)
-                and self.ops[e.catch_op].name == "ZEND_CATCH"
+                and (e.catch_op is not None or e.finally_op is not None)
             ),
             None,
         )
-        if entry is None or entry.catch_op is None:
+        if entry is None:
             return None
 
-        catch_op_index = entry.catch_op
-        try_end = catch_op_index - 1
+        has_catch = (
+            entry.catch_op is not None
+            and i < entry.catch_op <= end
+            and entry.catch_op < len(self.ops)
+            and self.ops[entry.catch_op].name == "ZEND_CATCH"
+        )
+        # A real finally block is entered through ZEND_FAST_CALL, which targets
+        # the first op of the block.  try_catch entries without that guard point
+        # at ordinary oplines and must keep flowing through the normal paths.
+        fast_call = None
+        if entry.finally_op is not None and i < entry.finally_op <= len(self.ops):
+            fast_call = next(
+                (
+                    k
+                    for k in range(i, entry.finally_op - 1)
+                    if self.ops[k].name == "ZEND_FAST_CALL"
+                    and entry.finally_op in self.ops[k].jump_targets
+                ),
+                None,
+            )
+        has_finally = fast_call is not None
+        if not has_catch and not has_finally:
+            return None
+
+        catch_op_index = entry.catch_op if has_catch else None
+        finally_op_index = entry.finally_op if has_finally else None
+
+        try_end = (catch_op_index - 1) if catch_op_index is not None else (finally_op_index or end + 1) - 1
         after = None
-        if self._jmp_target(try_end) is not None and (self._jmp_target(try_end) or 0) > catch_op_index:
+        if has_finally and try_end >= i and self.ops[try_end].name == "ZEND_JMP":
+            # The JMP after the FAST_CALL is where execution resumes once the
+            # block has run; drop both so the guard never reaches the output.
+            if self.ops[try_end].jump_targets:
+                after = self.ops[try_end].jump_targets[0]
+            try_end -= 1
+        if has_finally and try_end >= i and self.ops[try_end].name == "ZEND_FAST_CALL":
+            try_end -= 1
+        elif self._jmp_target(try_end) is not None and (self._jmp_target(try_end) or 0) > (catch_op_index or 0):
             after = self._jmp_target(try_end)
             try_end -= 1
 
+        finally_body: list[php.Stmt] | None = None
+        if finally_op_index is not None:
+            finally_stop = end + 1
+            if entry.finally_end is not None and finally_op_index <= entry.finally_end <= len(self.ops):
+                finally_stop = entry.finally_end
+            finally_body = self.decompile_into(finally_op_index, finally_stop - 1)
+
         self._active_try_catches.add(id(entry))
+        if finally_op_index is not None:
+            self._active_finally_ops.add(finally_op_index)
         try:
             try_body = self.decompile_into(i, try_end)
-            catch_op = self.ops[catch_op_index]
-            class_name = catch_op.op1.const_value() if catch_op.op1.is_const else None
-            var_name = (
-                self.ctx.cv_name(catch_op.result) if catch_op.result.is_cv else None
-            )
-            catch_end = (after - 1) if after is not None else end
-            catch_body = self.decompile_into(catch_op_index + 1, catch_end)
-        finally:
-            self._active_try_catches.remove(id(entry))
-
-        self.ctx.emit(
-            i,
-            php.TryStmt(
-                body=try_body,
-                catches=[
+            catches: list[php.CatchClause] = []
+            if catch_op_index is not None:
+                catch_op = self.ops[catch_op_index]
+                class_name = catch_op.op1.const_value() if catch_op.op1.is_const else None
+                # PHP 7.2 keeps the exception CV in op2, later builds in result.
+                if catch_op.result.is_cv:
+                    var_name = self.ctx.cv_name(catch_op.result)
+                elif catch_op.op2.is_cv:
+                    var_name = self.ctx.cv_name(catch_op.op2)
+                else:
+                    var_name = None
+                catch_last = (finally_op_index - 1) if finally_op_index is not None else ((after - 1) if after is not None else end)
+                if (
+                    catch_last > catch_op_index
+                    and self.ops[catch_last].name == "ZEND_JMP"
+                    and self.ops[catch_last - 1].name == "ZEND_FAST_CALL"
+                ):
+                    catch_last -= 2
+                elif catch_last > catch_op_index and self.ops[catch_last].name == "ZEND_FAST_CALL":
+                    catch_last -= 1
+                catches.append(
                     php.CatchClause(
                         class_names=[class_name if isinstance(class_name, str) else "Exception"],
                         var_name=var_name,
-                        body=catch_body,
+                        body=self.decompile_into(catch_op_index + 1, catch_last),
                     )
-                ],
-            ),
+                )
+        finally:
+            self._active_try_catches.remove(id(entry))
+            if finally_op_index is not None:
+                self._active_finally_ops.discard(finally_op_index)
+
+        self.ctx.emit(
+            i,
+            php.TryStmt(body=try_body, catches=catches, finally_body=finally_body),
         )
+        if finally_op_index is not None and entry.finally_end is not None:
+            return entry.finally_end + 1
         return after if after is not None else end + 1
 
     # -- helpers -------------------------------------------------------------------

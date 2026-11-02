@@ -374,18 +374,45 @@ def _raw_operand(operand: Any, jump_targets: set[int]) -> dict[str, Any]:
     return raw
 
 
+def _flat_operand(op: dict[str, Any], prefix: str) -> dict[str, Any] | None:
+    """Rebuild a nested operand from the flat ``op1_type`` layout.
+
+    Op arrays the dumper reaches without the PHP-side IR pass (the copies nested
+    under a parent's ``closures`` list) still carry one ``<prefix>.field`` key
+    per operand component instead of a nested object.
+    """
+    nested = op.get(prefix)
+    if isinstance(nested, dict):
+        return nested
+    if f"{prefix}_type" not in op and f"{prefix}.num" not in op:
+        return None
+    operand: dict[str, Any] = {
+        "type": op.get(f"{prefix}_type"),
+        "type_name": op.get(f"{prefix}_type_name"),
+        "constant": op.get(f"{prefix}.constant"),
+        "var": op.get(f"{prefix}.var"),
+        "num": op.get(f"{prefix}.num"),
+        "opline_num": op.get(f"{prefix}.opline_num"),
+        "cv_name": op.get(f"{prefix}.cv_name"),
+    }
+    literal = op.get(f"{prefix}.literal")
+    if literal is not None:
+        operand["literal"] = literal
+    return operand
+
+
 def _raw_opcode(op: dict[str, Any], fallback_index: int) -> dict[str, Any]:
     jump_targets = {int(t) for t in (op.get("jump_targets") or []) if isinstance(t, int)}
     extended = (op.get("extended_value") or 0) & ~_JUMP_MATERIALIZED_BIT
     return {
         "index": op.get("index", fallback_index),
-        "lineno": op.get("line") or 0,
+        "lineno": op.get("line") or op.get("lineno") or 0,
         "opcode": op.get("opcode"),
         "opcode_name": op.get("opcode_name"),
         "extended_value": extended,
-        "op1": _raw_operand(op.get("op1"), jump_targets),
-        "op2": _raw_operand(op.get("op2"), jump_targets),
-        "result": _raw_operand(op.get("result"), jump_targets),
+        "op1": _raw_operand(_flat_operand(op, "op1"), jump_targets),
+        "op2": _raw_operand(_flat_operand(op, "op2"), jump_targets),
+        "result": _raw_operand(_flat_operand(op, "result"), jump_targets),
     }
 
 
@@ -439,7 +466,10 @@ def _op_array_entry(
             for index, op in enumerate(op_array.get("opcodes") or [])
         ],
         "temp_variable_count": op_array.get("T") or 0,
-        "try_catch_raw": [],
+        "try_catch_raw": [
+            dict(entry) for entry in (op_array.get("try_catch") or [])
+            if isinstance(entry, dict)
+        ],
         "status": {"source": "runtime_opcode_dump"},
     }
     op_id, entry = build_op_array_entry(raw, source_file, kind=kind)
@@ -460,11 +490,6 @@ def _op_array_entry(
     entry["meta"]["source"] = safe_value("runtime_opcode_dump")
     if kind == "main":
         entry["strict_types"] = bool(fn_flags & 0x80000000)
-    entry["live_range"] = [
-        {k: int(r[k]) for k in ("tmp_var_start", "tmp_var_end") if isinstance(r.get(k), int)}
-        for r in (op_array.get("live_range") or [])
-        if isinstance(r, dict)
-    ]
     return op_id, entry
 
 
@@ -519,10 +544,62 @@ def _class_entry(class_id: str, raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _closure_meta(item: dict[str, Any], parent_id: str) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "parent": parent_id,
+        "lambda_id": safe_value(_plain(item.get("lambda_id"))),
+        "lambda_id_hex": item.get("lambda_id_hex"),
+        "literal_index": item.get("literal_index"),
+        "opcode_index": item.get("opcode_index"),
+    }
+    keys = ("parent", "opcode_index", "literal_index", "lambda_id_hex")
+    source_meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+    for key in keys:
+        if key in source_meta and source_meta[key] is not None:
+            meta[key] = _plain(source_meta[key])
+    return meta
+
+
+def _register_closures(
+    op_array: dict[str, Any],
+    *,
+    parent_id: str,
+    source_file: str,
+    op_arrays: dict[str, dict[str, Any]],
+    closure_index: dict[str, str],
+) -> None:
+    """Add the lambda op_arrays a dump carries for *op_array* (recursively)."""
+    for item in op_array.get("closures") or []:
+        if not isinstance(item, dict):
+            continue
+        body = item.get("op_array")
+        if not isinstance(body, dict):
+            continue
+        lambda_hex = item.get("lambda_id_hex") or f"{parent_id}#{item.get('opcode_index')}"
+        op_id = f"closure:{lambda_hex}"
+        if op_id not in op_arrays:
+            _, entry = _op_array_entry(
+                body, source_file=source_file, kind="closure", fallback_name="closure"
+            )
+            entry["id"] = op_id
+            entry["kind"] = "closure"
+            entry["meta"].update(_closure_meta(item, parent_id))
+            op_arrays[op_id] = entry
+        closure_index[str(lambda_hex)] = op_id
+        _register_closures(
+            body,
+            parent_id=op_id,
+            source_file=source_file,
+            op_arrays=op_arrays,
+            closure_index=closure_index,
+        )
+
+
 def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
     """Convert an ``ic72dump-ir-v3`` document to ``icdump-ir-v1``."""
     op_arrays: dict[str, dict[str, Any]] = {}
     function_index: dict[str, str] = {}
+    closure_index: dict[str, str] = {}
     class_index: dict[str, dict[str, Any]] = {}
 
     for raw in (runtime_ir.get("op_arrays") or {}).values():
@@ -544,6 +621,27 @@ def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
         if kind == "main" or op_id == "main":
             _, entry = _op_array_entry(raw, source_file=source_file, kind="main", fallback_name="main")
             op_arrays["main"] = entry
+            _register_closures(
+                raw, parent_id="main", source_file=source_file,
+                op_arrays=op_arrays, closure_index=closure_index,
+            )
+            continue
+        if kind == "closure" or op_id.startswith("closure:"):
+            if op_id in op_arrays:
+                closure_index[op_id.rsplit(":", 1)[-1]] = op_id
+                continue
+            _, entry = _op_array_entry(
+                raw, source_file=source_file, kind="closure", fallback_name="closure"
+            )
+            entry["id"] = op_id
+            entry["kind"] = "closure"
+            entry["meta"].update(_closure_meta(raw, "main"))
+            op_arrays[op_id] = entry
+            closure_index[op_id.rsplit(":", 1)[-1]] = op_id
+            _register_closures(
+                raw, parent_id=op_id, source_file=source_file,
+                op_arrays=op_arrays, closure_index=closure_index,
+            )
             continue
         fallback = op_id.rsplit(":", 1)[-1]
         try:
@@ -560,6 +658,10 @@ def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
         if owner:
             entry["meta"]["class"] = owner
         op_arrays[op_id] = entry
+        _register_closures(
+            raw, parent_id=op_id, source_file=source_file,
+            op_arrays=op_arrays, closure_index=closure_index,
+        )
 
     for name_hex, op_id in (runtime_ir.get("function_index") or {}).items():
         if op_id in op_arrays:
@@ -578,7 +680,7 @@ def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
         "summary": {
             "op_array_count": len(op_arrays),
             "function_count": len(function_index),
-            "closure_count": 0,
+            "closure_count": len(closure_index),
             "class_count": len(class_index),
             "decompile_status": {
                 "status": "runtime",
@@ -589,7 +691,7 @@ def to_icdump(runtime_ir: dict[str, Any], source_file: str) -> dict[str, Any]:
         "entry": "main",
         "op_arrays": op_arrays,
         "function_index": function_index,
-        "closure_index": {},
+        "closure_index": closure_index,
         "class_index": class_index,
         "ioncube_api_calls": safe_value([]),
     }

@@ -489,6 +489,39 @@ def _magic_literal_values(raw_literals: Any) -> dict[int, str]:
     return magic
 
 
+_OPERAND_TYPE_BY_NAME = {
+    "IS_UNUSED": 0,
+    "IS_CONST": 1,
+    "IS_TMP_VAR": 2,
+    "IS_VAR": 4,
+    "IS_CV": 8,
+}
+_OPERAND_TYPE_NAMES = {value: name for name, value in _OPERAND_TYPE_BY_NAME.items()}
+
+
+def _operand_type(raw_type: Any, type_name: Any) -> int:
+    """Normalize an operand kind onto this project's encoding (IS_CV = 8).
+
+    PHP 7.2 dumps upstream numbering (IS_UNUSED = 8, IS_CV = 16) while later
+    builds already emit the 0/1/2/4/8 layout, so the attached name wins and the
+    bit test only runs when it is missing.
+    """
+    if isinstance(type_name, str) and type_name in _OPERAND_TYPE_BY_NAME:
+        return _OPERAND_TYPE_BY_NAME[type_name]
+    value = _opt_int(raw_type, 0) or 0
+    if value & 16:
+        return 8
+    if value & 8:
+        return 0
+    if value & 4:
+        return 4
+    if value & 2:
+        return 2
+    if value & 1:
+        return 1
+    return 0
+
+
 def _convert_operand(
     raw_operand: Any,
     literal_values: list[Any],
@@ -497,19 +530,16 @@ def _convert_operand(
     if not isinstance(raw_operand, dict):
         return _empty_operand()
 
+    operand_type = _operand_type(raw_operand.get("type"), raw_operand.get("type_name"))
     jump_target = _opt_int(raw_operand.get("jump_target"))
-    serialized = _opt_int(raw_operand.get("serialized_value"), 0) or 0
+    serialized = _opt_int(raw_operand.get("serialized_value"))
+    if serialized is None:
+        serialized = _opt_int(raw_operand.get("num"), 0) or 0
     zend_value = _opt_int(raw_operand.get("zend_value"), serialized) or 0
     value = jump_target if jump_target is not None else zend_value
-    operand_type = _opt_int(raw_operand.get("type"), 0) or 0
     out: dict[str, Any] = {
         "type": operand_type,
-        "type_name": (
-            raw_operand.get("type_name")
-            if operand_type in {0, 1, 2, 4, 8}
-            and isinstance(raw_operand.get("type_name"), str)
-            else None
-        ),
+        "type_name": _OPERAND_TYPE_NAMES[operand_type],
         "constant": value,
         "var": value,
         "num": value,
@@ -517,7 +547,11 @@ def _convert_operand(
         "cv_name": None,
     }
     literal_index = _opt_int(raw_operand.get("literal_index"))
+    if literal_index is None and operand_type == 1:
+        literal_index = _opt_int(raw_operand.get("constant"))
     variable_index = _opt_int(raw_operand.get("variable_index"))
+    if variable_index is None and operand_type == 8:
+        variable_index = _opt_int(raw_operand.get("cv_index"))
 
     base_type = operand_type & 0x0F
     if base_type == 1 and literal_index is not None:
@@ -530,6 +564,8 @@ def _convert_operand(
         if variable_index is not None:
             out["cv_index"] = variable_index
         variable_name = raw_operand.get("variable_name")
+        if not isinstance(variable_name, str):
+            variable_name = raw_operand.get("cv_name")
         if isinstance(variable_name, str):
             out["cv_name"] = variable_name
 

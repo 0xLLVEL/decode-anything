@@ -129,6 +129,19 @@ static void dasm_add_zend_string_and_hex(zval *dst, const char *field,
 #define add_assoc_zval_ex dasm_add_assoc_zval_ex
 #define add_assoc_null_ex dasm_add_assoc_null_ex
 
+/* Zend's plain forms forward strlen(key), while every wrapper above expects
+ * the NUL-inclusive length sizeof() produces.  Without this each key loses one
+ * byte: "closures" lands as "closure".  strlen(key) + 1 fits both literal and
+ * variable keys. */
+#undef add_assoc_zval
+#undef add_assoc_long
+#undef add_assoc_bool
+#undef add_assoc_null
+#define add_assoc_zval(arg, key, value) add_assoc_zval_ex(arg, key, strlen(key) + 1, value)
+#define add_assoc_long(arg, key, value) add_assoc_long_ex(arg, key, strlen(key) + 1, value)
+#define add_assoc_bool(arg, key, value) add_assoc_bool_ex(arg, key, strlen(key) + 1, value)
+#define add_assoc_null(arg, key) add_assoc_null_ex(arg, key, strlen(key) + 1)
+
 static int le_opcodedump;
 
 void dasm_zend_arg_info(zval *dst, const zend_arg_info *src)
@@ -421,7 +434,7 @@ static void dasm_add_literal(zval *dst, const char *key,
 	literal_index = dasm_literal_index(op_array, operand.zv);
 	if (literal_index < 0) return;
 	ZVAL_DUP(&literal, operand.zv);
-	add_assoc_zval(dst, key, &literal);
+	add_assoc_zval_ex(dst, key, strlen(key) + 1, &literal);
 }
 
 #ifdef PHP_WIN32
@@ -455,7 +468,7 @@ static void dasm_add_literal_maybe_ic_decoded(zval *dst, const char *key,
 		tmp = *operand.zv;
 		*(uint32_t *)&tmp ^= xor_key;
 		ZVAL_DUP(&literal, &tmp);
-		add_assoc_zval(dst, key, &literal);
+		add_assoc_zval_ex(dst, key, strlen(key) + 1, &literal);
 	} __except(EXCEPTION_EXECUTE_HANDLER) {
 		dasm_add_literal(dst, key, op_array, type, operand);
 	}
