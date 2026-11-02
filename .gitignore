@@ -68,6 +68,7 @@ AGENTS*.md
 
 # Local PHP runtimes used as live ionCube test beds
 loader/php72-*/
+loader/php74-*/
 loader/refs/
 loader/*.zip
 
