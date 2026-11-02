@@ -192,8 +192,8 @@ the known mask bytes finds nothing.
 
 ### What is still masked
 
-The instruction stream starts at `+0x90` and is **not** plain Zend words. For
-`getTotalSendGroups` (12 ops, record span 1067 bytes) the first 48 bytes are:
+The instruction stream is **not** plain Zend words. For `getTotalSendGroups`
+(12 ops, record span 1067 bytes, block at `+0x90`) the first 48 bytes are:
 
 ```
 c2 07 00 00  69 c5 6a 53  5b 0f 00 00  1b 90 6f 74
@@ -212,11 +212,34 @@ word, and those explicit words read `20`, `24` and `-1`, i.e. the
 `extended_value` of `ZEND_FETCH_CONSTANT`, `ZEND_FETCH_OBJ_R` and the closing
 `ZEND_RETURN`. `tools.ic74_static_dump.walk_ops` is that grammar and
 `tests/test_ic74_static_dump.py` pins both facts.
+
+### The word block does not start at a fixed offset
+
+`+0x90` is where `getTotalSendGroups` happens to begin, not a rule. Measured
+block starts (distance from the first byte after the name):
+
+| op_array | delta | ops |
+|---|---|---|
+| `getTotalSendGroups` | `0x90` | 12 |
+| `addSendGroup` | `0xA0` | 30 |
+| `getSendGroup` | `0xA4` | 15 |
+| `getSendGroups` | `0xA4` | 60 |
+| `editSendGroup` | `0xB4` | 30 |
+| `editNewsletter` | `0xB8` | 36 |
+
+What sits between `+0x90` and the block is a byte-packed table of 5-byte operand
+records (`type` + 4-byte value), so its length follows the operand count and is
+not a multiple of four — that is why the old fixed `+0x90` cut into it for every
+record but the first.
+
+Locating the block by asking which start offset reproduces the runtime
+`extended_value` in every cache slot vouches for **79 of 112** records (all
+slots, not just some). That is a search, not a derivation: the offset has to come
+out of the record's own fields before this can be called static decoding.
 The high-entropy dwords in the dump above are therefore the 7.4-only extended
-word of each instruction, not a key array. `addSendGroup` does not walk the same
-way from its own `+0x90`, so the start of the word block is still per-record
-information the scan does not have, and
-`tools/ic74_static_dump.py` deliberately reports structure only.
+word of each instruction, not a key array — `addSendGroup` shows the same episode
+once its own block start is used instead of `+0x90`. Until that start is read out
+of the record, `tools/ic74_static_dump.py` reports structure only.
 
 ## Open items, in order
 
@@ -225,10 +248,11 @@ information the scan does not have, and
    any candidate pair must produce `90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2` before
    it is believed. The material is generated, not stored (no three-byte window
    of it occurs in the body), and the 7.2 `key1`/`key2` seeds do not apply.
-2. Find why `addSendGroup` does not walk from its own `+0x90`: either the word
-   block does not start there for every record, or the record header carries an
-   offset to it. `getTotalSendGroups` lands exactly on its table boundary, so
-   the grammar itself holds.
+2. Derive the word-block start from the record itself, replacing the search.
+   The block begins after the 5-byte operand table, whose length follows the
+   operand count, so a field in the record header should give it; the measured
+   starts (`0x90`, `0xA0`, `0xA4`, `0xB4`, `0xB8`) are the reference set, and a
+   correct derivation must reproduce all of them.
 3. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
    the table above, once (1) and (2) are settled.
 4. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
