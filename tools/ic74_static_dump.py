@@ -22,13 +22,15 @@ makes them a fingerprint rather than a guess: `--truth` checks exactly that.
 The opcode block does not start at a fixed offset: :func:`op_block_start` walks
 the 20-byte per-argument records that sit at ``+0x90`` first, which puts all 112
 sample op_arrays on their real start. The opcodes there are masked with a
-per-record key stream that is generated, not stored, so the scan reports
-structure only. :func:`walk_ops` is the confirmed grammar with the mask supplied
-by the caller; for ``getTotalSendGroups`` it reproduces all twelve runtime
-opcodes. See docs/ioncube-74-static.md.
+per-record key stream generated from a pair of 16-bit seeds; that pair is not
+searched for, it is written in a stub record ahead of each op_array as
+``[record id][s0][s1][8 zero bytes]`` and bound by the id at ``+0x00`` of the
+field block. :func:`walk_ops` is the confirmed grammar, and ``--opcodes`` runs
+the whole path — stub lookup, mask stream, ``0x95`` escape — so every opcode of
+every record comes out of the body with no loader and no PHP process.
 
     python tools/ic74_static_dump.py sample.php
-    python tools/ic74_static_dump.py sample.php --json --truth dump.json
+    python tools/ic74_static_dump.py sample.php --json --opcodes --truth dump.json
 """
 
 from __future__ import annotations
@@ -232,7 +234,17 @@ def walk_ops(body: bytes, start: int, count: int, mask: bytes) -> tuple[list[dic
     return ops, cursor
 
 
+TRUTH_FIELDS = ("opcodes", "variables", "temps", "literals", "line_start", "line_end")
+
+
 def compare_with_truth(report: dict, truth_path: Path) -> dict:
+    """Diff the report against a runtime dump, field by field and byte by byte.
+
+    ``opcode_bytes`` is only compared when the report carries it, i.e. under
+    ``--opcodes``; each mismatch reports the first differing index with eight
+    bytes of context either side rather than the whole stream.
+    """
+
     truth = json.loads(truth_path.read_text(encoding="utf-8"))
     expected: dict[str, dict] = {}
     for entry in (truth.get("op_arrays") or {}).values():
@@ -247,16 +259,38 @@ def compare_with_truth(report: dict, truth_path: Path) -> dict:
             "literals": len(entry.get("literals") or []),
             "line_start": entry.get("line_start") or 0,
             "line_end": entry.get("line_end") or 0,
+            "opcode_bytes": [int(op["opcode"]) for op in entry.get("opcodes") or []],
         }
 
     seen = {entry["name"]: entry for entry in report["entries"]}
     matched, mismatched, missing = [], [], []
+    streams = 0
     for name, want in expected.items():
         got = seen.get(name)
         if got is None:
             missing.append(name)
             continue
-        diff = {key: (got[key], want[key]) for key in want if got[key] != want[key]}
+        diff = {key: (got[key], want[key]) for key in TRUTH_FIELDS if got[key] != want[key]}
+        decoded = got.get("opcode_bytes")
+        if decoded is not None:
+            if decoded == want["opcode_bytes"]:
+                streams += 1
+            else:
+                first = next(
+                    (
+                        index
+                        for index, (left, right) in enumerate(
+                            zip(decoded, want["opcode_bytes"])
+                        )
+                        if left != right
+                    ),
+                    min(len(decoded), len(want["opcode_bytes"])),
+                )
+                diff["opcode_bytes"] = {
+                    "first_diff": first,
+                    "got": decoded[first : first + 8],
+                    "want": want["opcode_bytes"][first : first + 8],
+                }
         if diff:
             mismatched.append({"name": name, "diff": diff})
         else:
@@ -267,6 +301,7 @@ def compare_with_truth(report: dict, truth_path: Path) -> dict:
         "mismatched": mismatched,
         "missing": missing,
         "extra": sorted(set(seen) - set(expected)),
+        "opcode_streams_matched": streams,
     }
 
 
@@ -276,6 +311,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print the full report")
     parser.add_argument("--body-out", type=Path, help="write the decoded body")
     parser.add_argument("--truth", type=Path, help="compare against a runtime dump")
+    parser.add_argument(
+        "--opcodes",
+        action="store_true",
+        help="decode every instruction from its record's key stub",
+    )
     parser.add_argument("--payload-index", type=int, default=0)
     args = parser.parse_args(argv)
 
@@ -284,6 +324,24 @@ def main(argv: list[str] | None = None) -> int:
         args.body_out.write_bytes(body)
 
     scanned = scan_body(body)
+    entries = scanned["entries"]
+    xor_key = int(str(header["initial_header"]["bytecode_xor_key"]), 0)
+    escapes = 0
+    unseeded: list[str] = []
+    if args.opcodes:
+        from tools.ic74_mask import key_stubs, record_opcodes
+
+        index = key_stubs(body)
+        for entry in entries:
+            opcodes, taken, stub = record_opcodes(body, entry, xor_key, index)
+            if stub is None:
+                unseeded.append(entry["name"])
+                continue
+            entry["opcode_bytes"] = opcodes
+            entry["escapes"] = taken
+            entry["key_stub"] = {"offset": stub[0], "s0": stub[1], "s1": stub[2]}
+            escapes += taken
+
     report = {
         "format": "ic74-static-v1",
         "source": str(args.path),
@@ -294,22 +352,27 @@ def main(argv: list[str] | None = None) -> int:
             f"{header['header_trailer']['encoder_revision']}"
         ),
         "php_version_code": header["header_trailer"]["php_version_code"],
+        "bytecode_xor_key": xor_key,
         "container": {
             "md4_matches": header["md4_matches"],
             "transition_checksum_matches": header["transition_checksum_matches"],
             "body_offset": header["body_offset"],
             "body_size": len(body),
         },
-        "entries": scanned["entries"],
+        "entries": entries,
         "classes": [{"name": item["name"]} for item in scanned["classes"]],
         "summary": {
-            "entry_count": len(scanned["entries"]),
-            "named_op_arrays": len({entry["name"] for entry in scanned["entries"]}),
-            "class_count": len({entry.get("class") for entry in scanned["entries"] if entry.get("class")}),
-            "opcode_total": sum(entry["opcodes"] for entry in scanned["entries"]),
-            "literal_total": sum(entry["literals"] for entry in scanned["entries"]),
+            "entry_count": len(entries),
+            "named_op_arrays": len({entry["name"] for entry in entries}),
+            "class_count": len({entry.get("class") for entry in entries if entry.get("class")}),
+            "opcode_total": sum(entry["opcodes"] for entry in entries),
+            "literal_total": sum(entry["literals"] for entry in entries),
         },
     }
+    if args.opcodes:
+        report["summary"]["opcodes_decoded"] = len(entries) - len(unseeded)
+        report["summary"]["opcode_escapes"] = escapes
+        report["unseeded"] = unseeded
     if args.truth:
         report["truth"] = compare_with_truth(report, args.truth)
 
@@ -325,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{key:<22}{value}")
     print()
     current = None
-    for entry in report["entries"]:
+    for entry in entries:
         owner = entry.get("class")
         if owner and owner != current:
             current = owner
@@ -333,10 +396,18 @@ def main(argv: list[str] | None = None) -> int:
         label = entry["name"]
         if owner:
             label = f"  {label}"
+        stub = entry.get("key_stub")
+        tail = ""
+        if args.opcodes:
+            tail = (
+                f" stub={stub['s0']:#06x}:{stub['s1']:#06x} esc={entry['escapes']}"
+                if stub
+                else " no key stub"
+            )
         print(
             f"  {label:<34} ops={entry['opcodes']:<5} vars={entry['variables']:<3}"
             f" tmp={entry['temps']:<4} lits={entry['literals']:<4}"
-            f" lines={entry['line_start']}..{entry['line_end']}"
+            f" lines={entry['line_start']}..{entry['line_end']}{tail}"
         )
     if args.truth:
         truth = report["truth"]
@@ -346,6 +417,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mismatched            {len(truth['mismatched'])}")
         print(f"missing               {len(truth['missing'])}")
         print(f"extra                 {len(truth['extra'])}")
+        if args.opcodes:
+            print(f"opcode streams        {truth['opcode_streams_matched']}/{truth['truth_op_arrays']}")
         for item in truth["mismatched"][:5]:
             print(f"  {item['name']}: {item['diff']}")
         for name in truth["missing"][:5]:

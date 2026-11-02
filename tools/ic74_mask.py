@@ -12,10 +12,16 @@ the two bytes are always taken from the same stream at a distance of
 `ops + 2` bytes.
 
 So the byte a record hides is `A[i] ^ A[i + ops + 2]`, and the record is
-decodable as soon as its 32-bit pair `(s0, s1)` is known.  For 92 of the 112
-sample op_arrays that pair is stored in the body before the op block and this
-tool reproduces every masked byte; the remaining 20 take their seed from
-outside the record stream (`docs/ioncube-74-static.md`, "the mask, found").
+decodable as soon as its 32-bit pair `(s0, s1)` is known.  That pair is not
+searched for: every record owns a stub written ahead of it, shaped
+`[record id][s0][s1][8 zero bytes]`, and the id (`+0x00` of the field block) is
+what binds the pair to its op_array.  Matching pairs by position instead of by
+id is what left 20 records looking unseeded.
+
+27 of the sample's 6061 instructions also take the `0x95` escape: when the
+two-XOR result is the sentinel the `A[i]` term is dropped and the opcode is
+`stored ^ A[i + ops + 2]` (`decode_opcodes`).  With the stub and the escape in
+place **all 112 records and all 6061 opcodes come out of the body alone**.
 
     python tools/ic74_mask.py contacts.php --truth contacts.opcodes.json
     python tools/ic74_mask.py contacts.php --truth contacts.opcodes.json --scan
@@ -41,6 +47,8 @@ from tools.ic74_static_dump import (  # noqa: E402
 )
 
 SECOND_BYTE_DELTA = 2
+SENTINEL = 0x95
+STUB_PAD = b"\x00" * 8
 
 
 def stored_bytes(body: bytes, start: int, count: int) -> bytes:
@@ -53,6 +61,70 @@ def predict(s0: int, s1: int, xor_key: int, count: int) -> bytes:
 
     data = mask_stream(s0, s1, xor_key, 4 * count + 128)
     return bytes(data[i] ^ data[i + count + SECOND_BYTE_DELTA] for i in range(count))
+
+
+def decode_opcodes(
+    stored: bytes, s0: int, s1: int, xor_key: int
+) -> tuple[list[int], int]:
+    """Opcode bytes from the stored bytes and a key pair, plus the escape count.
+
+    `0x95` is the sentinel: a two-XOR result of exactly `0x95` means the `A[i]`
+    term was left out at encode time, so the opcode is `stored ^ A[i + ops + 2]`.
+    """
+
+    count = len(stored)
+    data = mask_stream(s0, s1, xor_key, 4 * count + 128)
+    opcodes: list[int] = []
+    escapes = 0
+    for index, byte in enumerate(stored):
+        second = data[index + count + SECOND_BYTE_DELTA]
+        value = byte ^ data[index] ^ second
+        if value == SENTINEL:
+            value = byte ^ second
+            escapes += 1
+        opcodes.append(value)
+    return opcodes, escapes
+
+
+def key_stubs(body: bytes) -> dict[int, list[tuple[int, int, int]]]:
+    """Every `[record id][s0][s1][8 zeros]` stub in the body, keyed by record id."""
+
+    index: dict[int, list[tuple[int, int, int]]] = {}
+    for offset in range(len(body) - 20):
+        if body[offset + 12 : offset + 20] != STUB_PAD:
+            continue
+        s0, s1 = struct.unpack_from("<II", body, offset + 4)
+        if s0 >= 0x10000 or s1 >= 0x10000:
+            continue
+        record_id = struct.unpack_from("<I", body, offset)[0]
+        index.setdefault(record_id, []).append((offset, s0, s1))
+    return index
+
+
+def record_key(
+    body: bytes, entry: dict, index: dict[int, list[tuple[int, int, int]]] | None = None
+) -> tuple[int, int, int] | None:
+    """The stub that belongs to *entry*: same record id, last one before the record."""
+
+    if index is None:
+        index = key_stubs(body)
+    record_id = struct.unpack_from("<I", body, entry["end"])[0]
+    candidates = [stub for stub in index.get(record_id, []) if stub[0] < entry["offset"]]
+    return max(candidates) if candidates else None
+
+
+def record_opcodes(
+    body: bytes, entry: dict, xor_key: int, index=None
+) -> tuple[list[int], int, tuple[int, int, int] | None]:
+    """Decode one op_array end to end: `(opcodes, escapes, stub)`."""
+
+    stub = record_key(body, entry, index)
+    if stub is None:
+        return [], 0, None
+    start = op_block_start(body, entry["end"])
+    stored = stored_bytes(body, start, entry["opcodes"])
+    opcodes, escapes = decode_opcodes(stored, stub[1], stub[2], xor_key)
+    return opcodes, escapes, stub
 
 
 def decode_record(
@@ -117,35 +189,36 @@ def main(argv: list[str] | None = None) -> int:
 
     truth = truth_opcodes(args.truth)
     pairs: dict[str, dict] = {}
+    index = key_stubs(body)
     recovered = checked = 0
+    escapes = 0
     for entry in entries:
         want = truth.get(entry["name"])
         if want is None or len(want) != entry["opcodes"]:
             continue
         checked += 1
         start = op_block_start(body, entry["end"])
-        stored = stored_bytes(body, start, entry["opcodes"])
-        target = bytes(stored[i] ^ want[i] for i in range(len(want)))
-        hit = find_seed(body, entry["offset"], entry["opcodes"], xor_key, target, args.window)
-        if hit is None:
+        opcodes, count, stub = record_opcodes(body, entry, xor_key, index)
+        if stub is None:
             if args.scan:
-                print(f"{entry['name']:<34} ops={entry['opcodes']:<5} no seed before record")
+                print(f"{entry['name']:<34} ops={entry['opcodes']:<5} no key stub")
             continue
-        offset, s0, s1 = hit
-        opcodes = decode_record(body, start, entry["opcodes"], s0, s1, xor_key)
+        escapes += count
         if opcodes == want:
             recovered += 1
-            pairs[entry["name"]] = {"offset": offset, "s0": s0, "s1": s1}
+            pairs[entry["name"]] = {"stub": stub[0], "s0": stub[1], "s1": stub[2]}
         if args.scan:
             print(
                 f"{entry['name']:<34} ops={entry['opcodes']:<5} block={start:#07x} "
-                f"seed={offset:#07x} ({entry['offset'] - offset:+d}) {s0:#010x} {s1:#010x}"
+                f"stub={stub[0]:#07x} ({entry['offset'] - stub[0]:+d}) "
+                f"{stub[1]:#06x}:{stub[2]:#06x} esc={count}"
             )
-    print(f"records with a stored key pair {recovered}/{checked}")
+    print(f"records decoded from their own key stub {recovered}/{checked}")
+    print(f"instructions taking the 0x95 escape {escapes}")
     if args.pairs:
         args.pairs.write_text(json.dumps(pairs, indent=1), encoding="utf-8")
         print(f"key pairs written to {args.pairs}")
-    return 0 if recovered else 1
+    return 0 if recovered == checked else 1
 
 
 if __name__ == "__main__":
