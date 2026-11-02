@@ -213,29 +213,41 @@ word, and those explicit words read `20`, `24` and `-1`, i.e. the
 `ZEND_RETURN`. `tools.ic74_static_dump.walk_ops` is that grammar and
 `tests/test_ic74_static_dump.py` pins both facts.
 
-### The word block does not start at a fixed offset
+### The word block starts after the argument table
 
-`+0x90` is where `getTotalSendGroups` happens to begin, not a rule. Measured
-block starts (distance from the first byte after the name):
+`+0x90` is where `getTotalSendGroups` happens to begin, not a rule. Every
+declared argument contributes a **20-byte record** there — five dwords, whose
+third is always `0x00010000` and whose last is a value shifted left eight:
 
-| op_array | delta | ops |
+```
+addSendGroup    (1 arg)
+  00 00 00 00 00 00 00 00 00 00 01 00 1e 00 00 00 41 00 00 00
+                                ^^^^^^^^^^^ 0x00010000
+```
+
+So the block start is `+0x90 + 20 * num_args`, and the count is not stored as a
+field — it is walked by that signature:
+
+```python
+start = fields + 0x90
+while u32(start + 8) == 0x00010000:
+    start += 20
+```
+
+That puts **all 112** sample op_arrays on their real start: walking each one from
+here places a cache slot on exactly the instructions whose runtime
+`extended_value` is non-zero, with no exceptions. `op_block_start` in
+`tools/ic74_static_dump.py` is that loop and the test asserts the 112/112.
+
+Measured deltas, for reference:
+
+| op_array | args | delta |
 |---|---|---|
-| `getTotalSendGroups` | `0x90` | 12 |
-| `addSendGroup` | `0xA0` | 30 |
-| `getSendGroup` | `0xA4` | 15 |
-| `getSendGroups` | `0xA4` | 60 |
-| `editSendGroup` | `0xB4` | 30 |
-| `editNewsletter` | `0xB8` | 36 |
-
-What sits between `+0x90` and the block is a byte-packed table of 5-byte operand
-records (`type` + 4-byte value), so its length follows the operand count and is
-not a multiple of four — that is why the old fixed `+0x90` cut into it for every
-record but the first.
-
-Locating the block by asking which start offset reproduces the runtime
-`extended_value` in every cache slot vouches for **79 of 112** records (all
-slots, not just some). That is a search, not a derivation: the offset has to come
-out of the record's own fields before this can be called static decoding.
+| `getTotalSendGroups` | 0 | `0x90` |
+| `addSendGroup` | 1 | `0xA4` |
+| `editSendGroup` | 2 | `0xB8` |
+| `getProductsToSend` | 3 | `0xCC` |
+| `getCatSelectedProducts` | 4 | `0xE0` |
 The high-entropy dwords in the dump above are therefore the 7.4-only extended
 word of each instruction, not a key array — `addSendGroup` shows the same episode
 once its own block start is used instead of `+0x90`. Until that start is read out
@@ -248,13 +260,13 @@ of the record, `tools/ic74_static_dump.py` reports structure only.
    any candidate pair must produce `90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2` before
    it is believed. The material is generated, not stored (no three-byte window
    of it occurs in the body), and the 7.2 `key1`/`key2` seeds do not apply.
-2. Derive the word-block start from the record itself, replacing the search.
-   The block begins after the 5-byte operand table, whose length follows the
-   operand count, so a field in the record header should give it; the measured
-   starts (`0x90`, `0xA0`, `0xA4`, `0xB4`, `0xB8`) are the reference set, and a
-   correct derivation must reproduce all of them.
+2. Explain the 27 records whose cache slot *values* differ from the runtime
+   `extended_value` while every other slot in the same record matches (for
+   example `addNewsletters` op 8 reads `198` where the dump says `5320`). The
+   presence pattern is right in all 112, so this is a value encoding question,
+   not an offset one.
 3. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
-   the table above, once (1) and (2) are settled.
+   the table above, once (1) is settled.
 4. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
    document so `decompile.py` can run without the runtime bundle.
 

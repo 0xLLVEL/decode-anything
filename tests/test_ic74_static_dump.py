@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from tools.ic74_static_dump import (  # noqa: E402
     compare_with_truth,
     decode_body,
+    op_block_start,
     scan_body,
     walk_ops,
 )
@@ -109,7 +110,8 @@ def test_word_walk_reproduces_the_runtime_opcodes(report):
         item for item in report["scanned"]["entries"] if item["name"] == "getTotalSendGroups"
     )
 
-    ops, end = walk_ops(report["body"], entry["end"] + 0x90, len(expected), TOTAL_SEND_GROUPS_MASK)
+    start = op_block_start(report["body"], entry["end"])
+    ops, end = walk_ops(report["body"], start, len(expected), TOTAL_SEND_GROUPS_MASK)
 
     assert [op["opcode"] for op in ops] == [item["opcode"] for item in expected]
     assert end == 0x25C7  # the record's literal table starts right here
@@ -124,10 +126,34 @@ def test_word_walk_recovers_cache_slots(report):
         item for item in report["scanned"]["entries"] if item["name"] == "getTotalSendGroups"
     )
 
-    ops, _ = walk_ops(report["body"], entry["end"] + 0x90, len(expected), TOTAL_SEND_GROUPS_MASK)
+    start = op_block_start(report["body"], entry["end"])
+    ops, _ = walk_ops(report["body"], start, len(expected), TOTAL_SEND_GROUPS_MASK)
 
     slots = [op["slot"] for op in ops if op["slot"] is not None]
     assert slots == [item["extended_value"] for item in expected if item["extended_value"] not in (0,)]
+
+
+def test_every_op_block_start_matches_the_runtime_slot_pattern(report):
+    """The derived start must place a cache slot on exactly the ops the dump says."""
+
+    truth = json.loads(TRUTH.read_text(encoding="utf-8"))["op_arrays"]
+    expected = {
+        value["function_name"]["value"]: value for value in truth.values()
+    }
+
+    checked = 0
+    for entry in report["scanned"]["entries"]:
+        want = expected[entry["name"]]
+        ops = want["opcodes"]
+        start = op_block_start(report["body"], entry["end"])
+        walk, _ = walk_ops(report["body"], start, len(ops), bytes(len(ops)))
+
+        assert [i for i, op in enumerate(walk) if op["slot"] is not None] == [
+            i for i, op in enumerate(ops) if op["extended_value"] not in (0,)
+        ], entry["name"]
+        checked += 1
+
+    assert checked == 112
 
 
 def test_json_report_is_serialisable(tmp_path, report):
