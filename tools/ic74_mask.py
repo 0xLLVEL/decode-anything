@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", help="op_array to decode with --seed")
     parser.add_argument("--seed", help="key pair as s0:s1, hex")
     parser.add_argument("--scan", action="store_true", help="list every record")
+    parser.add_argument("--pairs", type=Path, help="write the recovered key pair per record")
     parser.add_argument("--window", type=int, default=1400, help="seed search window")
     parser.add_argument("--payload-index", type=int, default=0)
     args = parser.parse_args(argv)
@@ -115,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     truth = truth_opcodes(args.truth)
+    pairs: dict[str, dict] = {}
     recovered = checked = 0
     for entry in entries:
         want = truth.get(entry["name"])
@@ -133,12 +135,16 @@ def main(argv: list[str] | None = None) -> int:
         opcodes = decode_record(body, start, entry["opcodes"], s0, s1, xor_key)
         if opcodes == want:
             recovered += 1
+            pairs[entry["name"]] = {"offset": offset, "s0": s0, "s1": s1}
         if args.scan:
             print(
                 f"{entry['name']:<34} ops={entry['opcodes']:<5} block={start:#07x} "
                 f"seed={offset:#07x} ({entry['offset'] - offset:+d}) {s0:#010x} {s1:#010x}"
             )
     print(f"records with a stored key pair {recovered}/{checked}")
+    if args.pairs:
+        args.pairs.write_text(json.dumps(pairs, indent=1), encoding="utf-8")
+        print(f"key pairs written to {args.pairs}")
     return 0 if recovered else 1
 
 

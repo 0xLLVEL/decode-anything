@@ -208,9 +208,35 @@ Measured over the whole sample (`tools/ic74_mask.py --truth`): **92 of 112**
 records decode from a pair stored in the body before the record, every masked
 byte included. The pair is not at a fixed distance — it sits anywhere in the
 113..1400 bytes ahead of the record, which is what a `--window 1400` search
-covers. The other 20 take their seed from outside the record stream: no dword
-pair anywhere in the body predicts their mask, so the seed has to come from a
-field the scan does not yet read (a class-level or file-level key).
+covers.
+
+Every recovered pair sits in a block of its own shape, embedded in the preceding
+record's tail rather than in the record's own header:
+
+```
+0x2443   X        89 03 00 00      905
+0x2447   k1       b0 1b 00 00      0x1BB0
+0x244b   k2       ea 59 00 00      0x59EA
+0x244f            00 00 00 00 00 00 00 00   (eight zero bytes)
+```
+
+`X` is not the distance to the name (`0x24b8 - 0x2443 = 117` for this record,
+`0x28e3 - 0x2854 = 143` for `delSendGroup`), so the block is not a record header;
+it is a key block the writer emits as part of the surrounding record's data.
+Recovered `X` values include 905, 906, 926, 1036, 1056, 1384, 1858, 2167, 2500,
+3076, 3173.
+
+The other 20 take their seed from somewhere else. Ruled out by measurement, for
+`editSendGroup` and five other misses:
+
+| Probe | Result |
+|---|---|
+| any dword pair in the 398,440-byte body, any shift `0..2*ops+8` | none |
+| any dword pair in the whole 186,438-byte file | none |
+| stepping the previous record's state up to 4000 words | none |
+| pairs at stride 8/12/…/64 (non-adjacent dwords) | none |
+| keys `0`, `owner_key`, `bytecode_xor_key ^ owner_key` | none |
+| MT4IC seeded from ±300 dwords around the record | none |
 
 On the reader side two generators exist for these states, `sub_1800955E0(kind)`:
 kind 4 is a 624-word MT19937 pool seeded through `sub_180094BA0`'s `69069`
@@ -295,10 +321,12 @@ of the record, `tools/ic74_static_dump.py` reports structure only.
 ## Open items, in order
 
 1. Locate the seed pair for every record. 92 of 112 are reachable by scanning
-   the body ahead of the record; the other 20 (including `editSendGroup`,
-   `addNewsletters` and `getEmailsFromSqlManual`) have no dword pair anywhere in
-   the body that predicts their mask, so their seed is derived from a field
-   outside the record stream. That is the only missing input left.
+   the body ahead of the record; the other 20 have no dword pair anywhere in the
+   body or the file that predicts their mask under any shift or candidate key
+   (table above). The block shape in the previous section says where the writer
+   keeps a pair when it keeps one, so the way in is the writer: find the branch
+   that emits the `[X][k1][k2]` block and what it writes for the 20 records that
+   do not get one.
 2. Port the word grammar plus `tools/ic74_mask.py` into
    `tools/ic74_static_dump.py` (`--opcodes`), now that the mask model is pinned
    for the records whose pair is in the body.
