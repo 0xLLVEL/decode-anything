@@ -17,7 +17,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tools.ic74_static_dump import compare_with_truth, decode_body, scan_body  # noqa: E402
+from tools.ic74_static_dump import (  # noqa: E402
+    compare_with_truth,
+    decode_body,
+    scan_body,
+    walk_ops,
+)
+
+# Mask stream for ``getTotalSendGroups``, recovered as ``stored_byte ^ opcode``
+# from the runtime dump (docs/ioncube-74-static.md) and pinned for the walk.
+TOTAL_SEND_GROUPS_MASK = bytes(
+    [0x90, 0x2B, 0x8D, 0x91, 0x6E, 0xC2, 0xB7, 0x8A, 0x1A, 0xD4, 0xC2, 0xB2]
+)
 
 SAMPLE = ROOT / "loader" / "refs" / "ic74dump-opcodes" / "contacts.php"
 TRUTH = SAMPLE.with_suffix(".opcodes.json")
@@ -87,6 +98,36 @@ def test_known_entry_values(report):
     total = by_name["getTotalSendGroups"]
     assert (total["opcodes"], total["variables"], total["literals"]) == (12, 1, 11)
     assert (total["line_start"], total["line_end"]) == (46, 50)
+
+
+def test_word_walk_reproduces_the_runtime_opcodes(report):
+    truth = json.loads(TRUTH.read_text(encoding="utf-8"))["op_arrays"]
+    expected = next(
+        value for value in truth.values() if value["function_name"]["value"] == "getTotalSendGroups"
+    )["opcodes"]
+    entry = next(
+        item for item in report["scanned"]["entries"] if item["name"] == "getTotalSendGroups"
+    )
+
+    ops, end = walk_ops(report["body"], entry["end"] + 0x90, len(expected), TOTAL_SEND_GROUPS_MASK)
+
+    assert [op["opcode"] for op in ops] == [item["opcode"] for item in expected]
+    assert end == 0x25C7  # the record's literal table starts right here
+
+
+def test_word_walk_recovers_cache_slots(report):
+    truth = json.loads(TRUTH.read_text(encoding="utf-8"))["op_arrays"]
+    expected = next(
+        value for value in truth.values() if value["function_name"]["value"] == "getTotalSendGroups"
+    )["opcodes"]
+    entry = next(
+        item for item in report["scanned"]["entries"] if item["name"] == "getTotalSendGroups"
+    )
+
+    ops, _ = walk_ops(report["body"], entry["end"] + 0x90, len(expected), TOTAL_SEND_GROUPS_MASK)
+
+    slots = [op["slot"] for op in ops if op["slot"] is not None]
+    assert slots == [item["extended_value"] for item in expected if item["extended_value"] not in (0,)]
 
 
 def test_json_report_is_serialisable(tmp_path, report):

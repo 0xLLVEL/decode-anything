@@ -19,8 +19,11 @@ Against `loader/refs/ic74dump-opcodes/contacts.opcodes.json` (113 op_arrays from
 the 7.4 runtime dumper) all six agree for every named op_array, which is what
 makes them a fingerprint rather than a guess: `--truth` checks exactly that.
 
-The opcode stream that starts at +0x90 is still masked - see
-docs/ioncube-74-static.md - so this reports structure, not instructions.
+The opcode stream that starts at +0x90 is masked with a per-record key stream
+that is generated, not stored, so the scan reports structure only.
+:func:`walk_ops` is the confirmed grammar with the mask supplied by the caller;
+for ``getTotalSendGroups`` it reproduces all twelve runtime opcodes.
+See docs/ioncube-74-static.md.
 
     python tools/ic74_static_dump.py sample.php
     python tools/ic74_static_dump.py sample.php --json --truth dump.json
@@ -73,6 +76,12 @@ def _u32(buf: bytes, offset: int) -> int:
     if offset < 0 or offset + 4 > len(buf):
         return -1
     return struct.unpack_from("<I", buf, offset)[0]
+
+
+def _s32(buf: bytes, offset: int) -> int:
+    if offset < 0 or offset + 4 > len(buf):
+        return -1
+    return struct.unpack_from("<i", buf, offset)[0]
 
 
 def _name_at(buf: bytes, offset: int) -> tuple[str, int] | None:
@@ -162,6 +171,46 @@ def scan_body(body: bytes) -> dict:
         elif owner is not None:
             entry["kind"] = "class"
     return {"entries": entries, "classes": classes}
+
+
+def walk_ops(body: bytes, start: int, count: int, mask: bytes) -> tuple[list[dict], int]:
+    """Walk the 7.4 word block the way ``sub_180097AA0`` does.
+
+    Each instruction is one opcode word plus the 7.4-only extended word. Both
+    cache bits set (`0x1800`) adds an explicit slot word; the line is the high
+    half unless it is ``0xFFFF``, which also adds a word. ``mask`` is the
+    per-op mask stream, one byte per instruction.
+    """
+
+    ops: list[dict] = []
+    cursor = start
+    for index in range(count):
+        word = _u32(body, cursor)
+        cursor += 8
+        slot = None
+        cache = word & 0x1800
+        if cache == 0x0800:
+            slot = 1
+        elif cache == 0x1000:
+            slot = 60
+        elif cache == 0x1800:
+            slot = _s32(body, cursor)
+            cursor += 4
+        line = word >> 16
+        if line == 0xFFFF:
+            line = _u32(body, cursor)
+            cursor += 4
+        ops.append(
+            {
+                "opcode": (word & 0xFF) ^ mask[index],
+                "line": line,
+                "slot": slot,
+                "arg1": bool(word & 0x100),
+                "arg2": bool(word & 0x200),
+                "arg3": bool(word & 0x400),
+            }
+        )
+    return ops, cursor
 
 
 def compare_with_truth(report: dict, truth_path: Path) -> dict:

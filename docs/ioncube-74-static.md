@@ -163,17 +163,32 @@ if (raw == (mask[i] ^ 0x95)) mask[i] = 0     # slot decodes to the stored byte
 opcode = raw ^ mask[i]                       # after the escape, ^ mask[i] again
 ```
 
-The mask values are **read from the program stream**, not generated: the slots
-come from `sub_180094B40`, which pulls one value from the record's byte stream
-and XORs its low byte with a byte of a wrapping keystream table
-(`reader+0x30` pointer, `+0x38` length, `+0x40` cursor). The bytes of that dword
-array are the per-slot mask, i.e. slot `i` is the byte at index `i` of the
-stream — the same `0x95`-guarded byte-cursor scheme the 7.2 loader uses.
+The slots come from `sub_180094B40`, which pulls one value through the reader
+and XORs its low byte with a byte of a wrapping keystream table (`reader+0x30`
+pointer, `+0x38` length, `+0x40` cursor), and slot `i` of the mask is the byte at
+index `i` of the resulting dword array — the same `0x95`-guarded byte cursor the
+7.2 loader uses.
 
-The same two-word multiply-add generator as 7.2 does exist in this build
+That material is **not stored in the body**. Recovering the twelve slots for
+`getTotalSendGroups` from the oracle (`raw ^ opcode` over the parse below) gives
+
+```
+90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2
+```
+
+i.e. three dwords `0x918d2b90 0x8ab7c26e 0xb2c2d41a` (matching the `--truth`
+opcode list exactly, 12/12). No three-byte window of that sequence appears
+anywhere in the body, raw or `^ 0x95`, so the values are produced, not read.
+
+The two-word multiply-add generator from 7.2 is present in this build
 (`0x1800953A3`, constants `0x7689` / `0x4650`, `ROL32(s1,16) + s0`, then
-`^ bytecode_xor_key` at `0x1800953E0`), but on the 7.4 path it is only reached
-through `sub_180001F40`, the seeded buffer decryptor — not for the opcode mask.
+`^ bytecode_xor_key` at `0x1800953E0`), and `sub_180001F40` shows the idiom the
+7.4 path uses for generated streams: `state = sub_1800955E0(kind)`, seeds from
+the two 32-bit hashes `sub_1800076E0` / `sub_180007730` over a key buffer, then
+one generator word per output byte. The seed for a record's mask is what still
+has to be pinned; the per-record seeds are not the `key1`/`key2` pair 7.2 uses,
+and brute-forcing every dword pair within ±512 bytes of the record head against
+the known mask bytes finds nothing.
 
 ### What is still masked
 
@@ -188,24 +203,35 @@ ee 1f 00 00  43 a9 2d 15  14 00 00 00  9b 07 00 00
 
 Small counters alternate with high-entropy dwords, i.e. the same split the 7.2
 build shows: a per-op key array plus XOR-masked opcode bytes (`0x95` is the "no
-key" escape there, and `sub_18009E8B0` XORs by op index). The 7.4 side of that
-split is `sub_180097AA0`, mapped above: the counters are opcode words, the
-high-entropy dwords are the 7.4-only extended word of each instruction, and the
-mask that turns one into the other is still to be located in the stream, so
+key" escape there, and `sub_18009E8B0` XORs by op index). Walking that region
+with the builder's grammar **does** stay in sync for `getTotalSendGroups`:
+twelve opcode words at `0x255b, 0x2563, 0x256b, ...`, ending at `0x25c7` —
+exactly the table boundary. The three cache words land where the runtime dump
+says they should: `0x0800` → slot `1`, `0x1000` → slot `60`, `0x1800` → explicit
+word, and those explicit words read `20`, `24` and `-1`, i.e. the
+`extended_value` of `ZEND_FETCH_CONSTANT`, `ZEND_FETCH_OBJ_R` and the closing
+`ZEND_RETURN`. `tools.ic74_static_dump.walk_ops` is that grammar and
+`tests/test_ic74_static_dump.py` pins both facts.
+The high-entropy dwords in the dump above are therefore the 7.4-only extended
+word of each instruction, not a key array. `addSendGroup` does not walk the same
+way from its own `+0x90`, so the start of the word block is still per-record
+information the scan does not have, and
 `tools/ic74_static_dump.py` deliberately reports structure only.
 
 ## Open items, in order
 
-1. Pin the stream offset of the mask dwords. The builder's algorithm is fully
-   known; what is left is where in the record `sub_180098570` starts reading its
-   `ops + 1` values, and whether the wrapping keystream table it XORs them with
-   is the decrypted header or a per-record table. Cross-check: slot bytes
-   recovered from `contacts.opcodes.json` (`raw ^ opcode`) must show up in the
-   body once that keystream is applied.
-2. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
-   the table above, and verify that the parse lands exactly on the record's
-   literal table for all 112 entries.
-3. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
+1. Pin the mask generator's seed. The builder's algorithm and the twelve mask
+   bytes of `getTotalSendGroups` are known, so the seed can be tested directly:
+   any candidate pair must produce `90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2` before
+   it is believed. The material is generated, not stored (no three-byte window
+   of it occurs in the body), and the 7.2 `key1`/`key2` seeds do not apply.
+2. Find why `addSendGroup` does not walk from its own `+0x90`: either the word
+   block does not start there for every record, or the record header carries an
+   offset to it. `getTotalSendGroups` lands exactly on its table boundary, so
+   the grammar itself holds.
+3. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
+   the table above, once (1) and (2) are settled.
+4. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
    document so `decompile.py` can run without the runtime bundle.
 
 ## Tooling in this repo
