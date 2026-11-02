@@ -196,6 +196,16 @@ def test_mask_stream_decodes_a_record_from_its_key_pair(report):
     )
 
 
+MISSES = {
+    "editSendGroup", "addNewsletters", "getEmailsFromSqlManual",
+    "getTotalNewsletters", "saveEmailsToCron", "getCronLogs", "getMessageSend",
+    "getCompleteDataSend", "getProductsToSend", "delViewsSend",
+    "getEmailCustomers", "getClients", "getEmailsByOrdereds",
+    "getShopCountries", "getTemplates", "addTemplate", "markEmailReqreview",
+    "getPurchasedsProducts", "installMailpro", "getLicense",
+}
+
+
 def test_most_records_carry_their_key_pair_in_the_body(report):
     """92 of 112 records decode from a pair stored ahead of the record."""
 
@@ -210,6 +220,7 @@ def test_most_records_carry_their_key_pair_in_the_body(report):
     body = report["body"]
     xor_key = 0x00363FA4
     recovered = checked = 0
+    missing: set[str] = set()
     for entry in report["scanned"]["entries"]:
         want = expected.get(entry["name"])
         if not want or len(want) != entry["opcodes"]:
@@ -220,6 +231,7 @@ def test_most_records_carry_their_key_pair_in_the_body(report):
         target = bytes(stored[i] ^ want[i] for i in range(len(want)))
         hit = find_seed(body, entry["offset"], entry["opcodes"], xor_key, target, 1400)
         if hit is None:
+            missing.add(entry["name"])
             continue
         mask = predict(hit[1], hit[2], xor_key, entry["opcodes"])
         if [stored[i] ^ mask[i] for i in range(len(want))] == want:
@@ -227,6 +239,7 @@ def test_most_records_carry_their_key_pair_in_the_body(report):
 
     assert checked == 112
     assert recovered == 92
+    assert missing == MISSES
 
 
 def test_json_report_is_serialisable(tmp_path, report):

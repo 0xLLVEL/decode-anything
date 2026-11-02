@@ -226,17 +226,36 @@ it is a key block the writer emits as part of the surrounding record's data.
 Recovered `X` values include 905, 906, 926, 1036, 1056, 1384, 1858, 2167, 2500,
 3076, 3173.
 
-The other 20 take their seed from somewhere else. Ruled out by measurement, for
-`editSendGroup` and five other misses:
+The other 20 are pinned by name in `tests/test_ic74_static_dump.py` (`MISSES`):
+`editSendGroup`, `addNewsletters`, `getEmailsFromSqlManual`, `getTotalNewsletters`,
+`saveEmailsToCron`, `getCronLogs`, `getMessageSend`, `getCompleteDataSend`,
+`getProductsToSend`, `delViewsSend`, `getEmailCustomers`, `getClients`,
+`getEmailsByOrdereds`, `getShopCountries`, `getTemplates`, `addTemplate`,
+`markEmailReqreview`, `getPurchasedsProducts`, `installMailpro`, `getLicense`.
+
+Ruled out by measurement (each probe run on the misses, most on all of them):
 
 | Probe | Result |
 |---|---|
-| any dword pair in the 398,440-byte body, any shift `0..2*ops+8` | none |
+| any dword pair in the 398,440-byte body, double xor, every shift `0..2*ops+8` | none |
 | any dword pair in the whole 186,438-byte file | none |
-| stepping the previous record's state up to 4000 words | none |
-| pairs at stride 8/12/…/64 (non-adjacent dwords) | none |
+| any adjacent pair anywhere, single xor (contiguous byte window) | none |
+| pairs at stride 8/12/16/20/24/32 (non-adjacent dwords) | none |
+| any `[x][a][b]` triple with all three below `0x100000` (75,636 of them) | none |
+| 16-bit pairs (`u16`,`u16`) packed anywhere in the body | none |
+| stepping a hit record's state, then any shift `0..2000` | none |
+| the seed pair of any of the other 92 records, both orders | none |
+| regenerating from each hit seed and searching 40,000 bytes | none |
 | keys `0`, `owner_key`, `bytecode_xor_key ^ owner_key` | none |
-| MT4IC seeded from ±300 dwords around the record | none |
+| MT4IC from the body head, header keys, or ±300 dwords around the record | none |
+| seeds = `sub_1800076E0` / `sub_180007730` over the name, name+NUL, name+key | none |
+
+So the mask for those records is produced from state that is neither stored nor a
+hash of the record's own fields, while the record layout, block start and word
+grammar are all confirmed correct for them (their literal counts land exactly on
+the table boundary after the walk, same as the hits). The writer branch that
+emits the `[X][k1][k2]` block is therefore the place to look: it must have a
+second path for the 20.
 
 On the reader side two generators exist for these states, `sub_1800955E0(kind)`:
 kind 4 is a 624-word MT19937 pool seeded through `sub_180094BA0`'s `69069`
@@ -320,13 +339,13 @@ of the record, `tools/ic74_static_dump.py` reports structure only.
 
 ## Open items, in order
 
-1. Locate the seed pair for every record. 92 of 112 are reachable by scanning
-   the body ahead of the record; the other 20 have no dword pair anywhere in the
-   body or the file that predicts their mask under any shift or candidate key
-   (table above). The block shape in the previous section says where the writer
-   keeps a pair when it keeps one, so the way in is the writer: find the branch
-   that emits the `[X][k1][k2]` block and what it writes for the 20 records that
-   do not get one.
+1. Locate the seed pair for the last 20 records. Every stored-data and
+   derived-data route tested so far is negative (table above), so the way in is
+   the writer: find the branch that emits the `[X][k1][k2]` block and what it
+   does instead for the 20 names listed above. The reader side is already mapped:
+   `sub_180094B10` seeds the record's state from one dword read in the record
+   header, and `sub_180094AC0` applies the licence table when
+   `qword_1801C2440` is set.
 2. Port the word grammar plus `tools/ic74_mask.py` into
    `tools/ic74_static_dump.py` (`--opcodes`), now that the mask model is pinned
    for the records whose pair is in the body.
