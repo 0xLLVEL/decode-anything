@@ -151,6 +151,22 @@ So the record is 32 bytes per instruction: `+0x00` extended qword, `+0x08` /
 `+0x0C` / `+0x10` the three aux payloads, `+0x14` cache slot, `+0x18` line,
 `+0x1C` the stored opcode byte.
 
+### The reader chain around it
+
+The functions that sit on the same path, read in this order:
+
+| Address | Role |
+|---|---|
+| `0x180098FC0` | per-record entry: allocates the 80-byte op_array wrapper, reads the 4-byte header word plus a length-prefixed string, then branches |
+| `0x180098C50` | reads a `u16` length, then that many bytes, interned as a `zend_string` |
+| `0x1800974B0` | reads the word count and the aux count, allocates `4 * words` and `5 * aux` |
+| `0x1800982A0` | static-variable and literal fixups over the record |
+| `0x180098D20` | class-only variant (`0x8000` header flag): sets `__construct`, class flags |
+| `0x180097AA0` | the word decoder |
+
+So the record carries two parallel arrays, the word block and the 5-byte aux
+block, plus a length-prefixed string (the doc comment) ahead of the field block.
+
 ### The opcode mask
 
 The stored byte is not the opcode. `sub_180098570` allocates **`ops + 1` dwords**
@@ -265,8 +281,15 @@ of the record, `tools/ic74_static_dump.py` reports structure only.
 1. Pin the mask generator's seed. The builder's algorithm and the twelve mask
    bytes of `getTotalSendGroups` are known, so the seed can be tested directly:
    any candidate pair must produce `90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2` before
-   it is believed. The material is generated, not stored (no three-byte window
-   of it occurs in the body), and the 7.2 `key1`/`key2` seeds do not apply.
+   it is believed.
+
+   What is already ruled out: the material is not in the body (no three-byte
+   window occurs raw or `^ 0x95`); it is not periodic (no period up to 300 over
+   the 6061 recovered bytes); and it is not 7.2's multiply-add generator, whose
+   output caps the top byte at `0xBC` while the recovered dwords are uniform over
+   `0x00..0xFF`. The reader state that produces it lives at `ctx + 40` with the
+   stream function at `+24` and a wrapping keystream table at `+48`/`+56`/`+64`;
+   finding what fills that table is the way in.
 2. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
    the table above, once (1) is settled.
 3. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
