@@ -239,6 +239,13 @@ here places a cache slot on exactly the instructions whose runtime
 `extended_value` is non-zero, with no exceptions. `op_block_start` in
 `tools/ic74_static_dump.py` is that loop and the test asserts the 112/112.
 
+Slot *values* then agree for all **1731** of them, except the 44
+`ZEND_FE_FETCH_R` instructions. That opcode's cache word carries the jump target
+relative to the op_array (`addNewsletters` op 8 stores `198`, and the dump's
+`jump_targets` says `198`) while the runtime resolves it into a byte offset for
+`extended_value` (`5320`) — so the mismatch is resolution state, not a different
+encoding.
+
 Measured deltas, for reference:
 
 | op_array | args | delta |
@@ -260,14 +267,9 @@ of the record, `tools/ic74_static_dump.py` reports structure only.
    any candidate pair must produce `90 2b 8d 91 6e c2 b7 8a 1a d4 c2 b2` before
    it is believed. The material is generated, not stored (no three-byte window
    of it occurs in the body), and the 7.2 `key1`/`key2` seeds do not apply.
-2. Explain the 27 records whose cache slot *values* differ from the runtime
-   `extended_value` while every other slot in the same record matches (for
-   example `addNewsletters` op 8 reads `198` where the dump says `5320`). The
-   presence pattern is right in all 112, so this is a value encoding question,
-   not an offset one.
-3. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
+2. Port the word grammar into `tools/ic74_static_dump.py` (`--opcodes`), using
    the table above, once (1) is settled.
-4. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
+3. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
    document so `decompile.py` can run without the runtime bundle.
 
 ## Tooling in this repo

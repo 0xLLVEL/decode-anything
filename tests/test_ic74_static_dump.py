@@ -133,15 +133,23 @@ def test_word_walk_recovers_cache_slots(report):
     assert slots == [item["extended_value"] for item in expected if item["extended_value"] not in (0,)]
 
 
+FE_FETCH = "ZEND_FE_FETCH_R"
+
+
 def test_every_op_block_start_matches_the_runtime_slot_pattern(report):
-    """The derived start must place a cache slot on exactly the ops the dump says."""
+    """The derived start must place a cache slot on exactly the ops the dump says.
+
+    Slot values must agree too, except on ``ZEND_FE_FETCH_R``: its word holds the
+    jump target relative to the op_array, while the dumper reports the resolved
+    byte offset.
+    """
 
     truth = json.loads(TRUTH.read_text(encoding="utf-8"))["op_arrays"]
     expected = {
         value["function_name"]["value"]: value for value in truth.values()
     }
 
-    checked = 0
+    compared = 0
     for entry in report["scanned"]["entries"]:
         want = expected[entry["name"]]
         ops = want["opcodes"]
@@ -151,9 +159,14 @@ def test_every_op_block_start_matches_the_runtime_slot_pattern(report):
         assert [i for i, op in enumerate(walk) if op["slot"] is not None] == [
             i for i, op in enumerate(ops) if op["extended_value"] not in (0,)
         ], entry["name"]
-        checked += 1
 
-    assert checked == 112
+        for got, op in zip(walk, ops):
+            if got["slot"] is None or op["opcode_name"] == FE_FETCH:
+                continue
+            assert got["slot"] == op["extended_value"], (entry["name"], op["opcode_name"])
+            compared += 1
+
+    assert compared == 1731
 
 
 def test_json_report_is_serialisable(tmp_path, report):
