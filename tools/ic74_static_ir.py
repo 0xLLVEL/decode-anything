@@ -2,11 +2,12 @@
 """Write the static 7.4 structure of a file as ``icdump-ir-v1`` JSON.
 
 No PHP, no loader DLL, no dumper extension: the container, the body, the record
-scan, the seed stubs, the mask stream and the opcode walk all run in Python.
+scan, the seed stubs, the mask stream, the opcode walk, the literal pool and the
+operand table all run in Python.
 
-Operand values are not part of the body, so every emitted instruction carries
-``IS_UNUSED`` operands - the document is the file's skeleton (class, methods,
-argument counts, line ranges, opcode order), not decompiled source.
+Every live operand slot comes out equal to the runtime dump; branch operands are
+the exception. The body stores a branch destination in a form that is not the
+eported opline, so a decompile still uses the runtime dump for 7.4.
 
     python tools/ic74_static_ir.py file.php -o file.icdump.json
     python tools/ic74_static_ir.py contacts.php --truth contacts.opcodes.json
@@ -42,7 +43,8 @@ def compare(icdump: dict, truth_path: Path) -> dict:
         if name:
             got[name] = entry
 
-    streams = ranges = 0
+    streams = ranges = live_slots = operands_ok = 0
+    literals = literals_ok = 0
     mismatched: list[str] = []
     for name, want in expected.items():
         entry = got.get(name)
@@ -62,10 +64,34 @@ def compare(icdump: dict, truth_path: Path) -> dict:
             ranges += 1
         else:
             mismatched.append(f"lines:{name}")
+        for got_lit, want_lit in zip(
+            entry.get("literals") or [], want.get("literals") or []
+        ):
+            literals += 1
+            if got_lit.get("type") == want_lit.get("type") and (
+                got_lit.get("value") == want_lit.get("value")
+                or want_lit.get("type") == "array"
+                or want_lit.get("value") is None
+            ):
+                literals_ok += 1
+        for got_op, want_op in zip(entry.get("opcodes") or [], want.get("opcodes") or []):
+            for key in ("op1", "op2", "result"):
+                if want_op[key]["type"] == 0:
+                    continue
+                live_slots += 1
+                if (got_op[key]["type"], got_op[key]["var"]) == (
+                    want_op[key]["type"],
+                    want_op[key]["var"],
+                ):
+                    operands_ok += 1
     return {
         "truth_op_arrays": len(expected),
         "opcode_streams": streams,
         "line_ranges": ranges,
+        "literals": literals,
+        "literals_ok": literals_ok,
+        "live_operands": live_slots,
+        "live_operands_ok": operands_ok,
         "mismatched": mismatched,
     }
 
@@ -87,7 +113,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"opcode_total         {static['opcode_total']}")
     print(f"opcode_escapes       {static['opcode_escapes']}")
     print(f"unseeded             {len(static['unseeded'])}")
-    print("operands             unresolved (not in the body)")
+    print("operands             static (aux table)")
+    print("literals             static (pool table)")
 
     status = 0
     if args.truth:
@@ -95,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"truth op_arrays      {result['truth_op_arrays']}")
         print(f"opcode streams       {result['opcode_streams']}/{result['truth_op_arrays']}")
         print(f"line ranges          {result['line_ranges']}/{result['truth_op_arrays']}")
+        print(f"literals             {result['literals_ok']}/{result['literals']}")
+        print(f"live operands        {result['live_operands_ok']}/{result['live_operands']}")
         if result["mismatched"]:
             status = 1
             for item in result["mismatched"][:10]:

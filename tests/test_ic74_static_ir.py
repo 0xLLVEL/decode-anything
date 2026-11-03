@@ -1,10 +1,10 @@
-"""The static 7.4 body reaches ``icdump-ir-v1``: structure only, no operands.
+"""The static 7.4 body reaches ``icdump-ir-v1``, operands included.
 
-What is pinned here is the *structural* layer - record identity, opcode bytes,
-line ranges, class/method indexing - because that is what the body carries. The
-operand values are not in it, so every instruction is emitted with
-``IS_UNUSED`` and the test asserts that too: the boundary is part of the
-contract, not an accident.
+Pinned here: record identity, opcode bytes, line ranges, class/method indexing,
+the literal pool, the CV names and the operand slot of every live operand.
+What is *not* pinned is the jump destination: a branch operand in the body is
+not the opline the loader reports, so ``decompile.py`` still routes 7.4 through
+the runtime dump until that encoding is read.
 """
 
 from __future__ import annotations
@@ -87,14 +87,67 @@ def test_line_ranges_and_counts_match(icdump, truth):
         assert len(entry["opcodes"]) == len(want["opcodes"]), name
 
 
-def test_operands_are_marked_unresolved(icdump):
-    for entry in icdump["op_arrays"].values():
-        for op in entry["opcodes"]:
+def _by_name(icdump: dict, truth: dict[str, dict]) -> list[tuple[dict, dict]]:
+    pairs = []
+    for name, want in truth.items():
+        entry = next(
+            item
+            for item in icdump["op_arrays"].values()
+            if item["function_name"]["value"] == name
+        )
+        pairs.append((entry, want))
+    return pairs
+
+
+def test_every_live_operand_matches_the_runtime_dump(icdump, truth):
+    checked = 0
+    mismatched = []
+    for entry, want in _by_name(icdump, truth):
+        for got_op, want_op in zip(entry["opcodes"], want["opcodes"]):
             for key in ("op1", "op2", "result"):
-                assert op[key]["type"] == 0, (entry["function_name"], op["index"])
+                if want_op[key]["type"] == 0:
+                    continue
+                checked += 1
+                if (got_op[key]["type"], got_op[key]["var"]) != (
+                    want_op[key]["type"],
+                    want_op[key]["var"],
+                ):
+                    mismatched.append((entry["function_name"]["value"], got_op["index"], key))
+    assert checked == 11473
+    assert mismatched == []
+
+
+def test_cv_names_come_from_the_pool(truth):
+    static = {
+        entry["function_name"]: entry
+        for entry in document(SAMPLE)["op_arrays"].values()
+    }
+    for name, want in truth.items():
+        entry = static[name]
+        assert entry["vars"] == [item["value"] for item in want["vars"]["value"]]
+        for got_op, want_op in zip(entry["opcodes"], want["opcodes"]):
+            for key in ("op1", "op2", "result"):
+                if want_op[key]["type"] != 8:
+                    continue
+                assert got_op[key]["cv_name"] == want_op[key]["cv_name"]
+
+
+def test_literals_match_the_runtime_dump(icdump, truth):
+    for entry, want in _by_name(icdump, truth):
+        got, expected = entry["literals"], want["literals"]
+        assert len(got) == len(expected)
+        for got_lit, want_lit in zip(got, expected):
+            assert got_lit["type"] == want_lit["type"]
+            if want_lit["type"] == "string" and want_lit["value"] is not None:
+                assert got_lit["value"] == want_lit["value"]
+            elif want_lit["type"] in ("int", "bool", "null"):
+                assert got_lit["value"] == want_lit["value"]
+
+
+def test_status_reports_the_static_operand_source(icdump):
     status = icdump["summary"]["decompile_status"]
-    assert status["status"] == "static_skeleton"
-    assert status["operands"] == "unresolved"
+    assert status["status"] == "static_body"
+    assert status["operands"] == "static"
 
 
 def test_static_summary_counts(icdump):
@@ -102,6 +155,7 @@ def test_static_summary_counts(icdump):
     assert static["opcode_total"] == 6061
     assert static["opcode_escapes"] == 27
     assert static["unseeded"] == []
+    assert static["opcode_names"] is True
 
 
 def test_document_is_deterministic():
