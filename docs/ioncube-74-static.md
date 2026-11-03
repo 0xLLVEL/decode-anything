@@ -743,6 +743,24 @@ Two results matter more than the map:
    the fields that could move between encoders are the stub spacing (109..1342
    bytes here) and the escape index term (`ops + 2`). Run `--opcodes --truth`
    against a second 7.4 sample before treating the constants as fixed.
+
+   Tried on `C:/Users/ezan/Documents/samples/next.php` (PHP 7.4, encoder 13.0.1,
+   third-party "Rtl-Theme" wrapper): both container gates pass (`md4_matches`,
+   `transition_checksum_matches`) and the body inflates to 9875 bytes, but it
+   opens with a symbol table (`\x01\x00\x00\x00\x06\x00\x00\x00 <len> <name>\0`)
+   and carries no `0x42020001` record mark anywhere, so the scan finds
+   **0 op_arrays**. That is a different body layout, not a moved constant: the
+   encoder-15 grammar above is unchanged and still needs a second encoder-15
+   artifact to be measured against. Encoder 13.0.x 7.4 files stay on the runtime
+   path until that layout is reversed.
+
+   Reconfirmed while doing it: the dump path is not 92/112. `--opcodes --truth`
+   on the sample reports `entry_count 112`, `opcodes_decoded 112`,
+   `opcode_total 6061`, `matched 112`, `opcode streams 112/112`, and
+   `tests/test_ic74_static_dump.py` asserts `unseeded == set()` — every record
+   owns a stub blend. The 92/112 in `probe74_locked_seed.py` was that probe's
+   sentinel count, not a decode gap.
+
 2. Feed the result into `engines/ioncube/adapter.py` as an `icdump-ir-v1`
    document so `decompile.py` can run without the runtime bundle. The opcode
    bytes, the line numbers and the cache slots are all available now; the literal
