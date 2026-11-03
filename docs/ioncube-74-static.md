@@ -736,6 +736,40 @@ Two results matter more than the map:
   for this sample — a record that did use it would need both the table and the
   seed from a licence blob, and no record here carries one.
 
+## The IR bridge, and the one table it still needs
+
+`engines/ioncube/static74.py` turns the static reader into `icdump-ir-v1`, and
+`tools/ic74_static_ir.py` writes it out:
+
+```bash
+python tools/ic74_static_ir.py loader/refs/ic74dump-opcodes/contacts.php \
+  --truth loader/refs/ic74dump-opcodes/contacts.opcodes.json -o out.icdump.json
+# encoder 15.0.1, op_arrays 112, opcode_total 6061, opcode_escapes 27,
+# unseeded 0, opcode streams 112/112, line ranges 112/112
+```
+
+It reuses `runtime_dump.to_icdump`, so the id scheme (`class:<hex>:method:<hex>`),
+the class index and the literal/live-range plumbing are the same code the runtime
+dump goes through - only the source document differs.
+
+**What it cannot do yet: operands.** The body carries the opcode, the line, the
+cache slot and a presence nibble per instruction - not the operand. Three
+measurements say the missing value is nowhere in that word block:
+
+| Test | Result |
+|---|---|
+| second dword of an instruction, as a function of `(opcode, op1, op2, result)` | 511 of 534 repeated operand tuples disagree, so it is not operand data |
+| contiguous operand encodings anywhere in the body (`u8+u32`, `u8+u16`, `u16+u32`, values only, three field orders) | no hit for a 12-instruction record |
+| AST decompile of an operand-less document | 201 KB of valid PHP whose bodies are `$this->{'?'}(null)` - structure without meaning |
+
+So the bridge stops at the structure on purpose. `decompile.py` keeps routing
+7.4 through the runtime dump because a skeleton that passes `php -l` while
+saying nothing is worse than a refusal: it would be written over the user's
+output as if it were decompiled source. The remaining read is the operand table
+itself - likely the block between the op words and the literal strings, whose
+5-byte-looking records still did not land on the truth operands in any tested
+alignment.
+
 ## Open items, in order
 
 1. Verify the stub envelope on a second artifact. Everything above is exact for
