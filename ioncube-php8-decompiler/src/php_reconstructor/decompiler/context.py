@@ -9,6 +9,7 @@ a decode anomaly (reported as a warning, surfaced as ``$tmpN``).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -164,6 +165,70 @@ class DecompileContext:
         self.warnings.append(f"{self.op_array.id}: {message}")
 
 
+_AST_CONSTANT_HEADER = re.compile(r"@:(\d+):(\d+):(\d+);s(\d+)'")
+
+
+def _ast_constant_ref(value: str) -> str | None:
+    """Recover a constant name from a serialized ``ZEND_AST_CONSTANT`` literal.
+
+    A parameter or property default that is a constant (``int $order =
+    SORT_ASC``) is stored as a compiler AST rather than a zval, so the literal
+    table hands back the node text. Bit 0x800 on the header records
+    ``IS_CONSTANT_UNQUALIFIED_IN_NAMESPACE``: the source name was written bare,
+    so only its basename may be emitted.
+    """
+    match = _AST_CONSTANT_HEADER.search(value)
+    if match is None or int(match.group(1)) != 65:
+        return None
+    if any(0x20 <= ord(char) <= 0x7E for char in value[: match.start()]):
+        return None
+    length = int(match.group(4))
+    name = value[match.end() : match.end() + length]
+    if len(name) != length or not name:
+        return None
+    if int(match.group(2)) & 0x800:
+        return name.rpartition("\\")[2]
+    return "\\" + name.lstrip("\\")
+
+
+_AST_CLASS_CONST_CHILD = re.compile(r"@:64:(\d+):\d+;s(\d+)'")
+_AST_NODE_HEADER = re.compile(r"@:(\d+):(\d+):(\d+);")
+
+
+def _ast_class_const_ref(value: str) -> tuple[str, str] | None:
+    """Recover ``Class::CONST`` from a serialized ``ZEND_AST_CLASS_CONST``.
+
+    ``ZEND_AST_CLASS_CONST`` is kind 517; its two children are ``ZEND_AST_ZVAL``
+    nodes holding the class name and the constant name. Both arrive with a
+    trailing ``;hash;flags;kind;hash;`` run that is not part of the name, which
+    is why the child header carries its own length prefix.
+    """
+    header = _AST_NODE_HEADER.search(value)
+    if header is None or int(header.group(1)) != 517:
+        return None
+    if any(0x20 <= ord(char) <= 0x7E for char in value[: header.start()]):
+        return None
+    children: list[tuple[str, int]] = []
+    pos = header.end()
+    while len(children) < int(header.group(3)):
+        match = _AST_CLASS_CONST_CHILD.search(value, pos)
+        if match is None:
+            return None
+        length = int(match.group(2))
+        start = match.end()
+        raw = value[start : start + length]
+        if len(raw) != length or not raw:
+            return None
+        children.append((raw.replace("\\\\", "\\"), int(match.group(1))))
+        pos = start + length
+    if len(children) != 2:
+        return None
+    class_name = children[0][0]
+    if children[0][1] & 0x800:
+        class_name = class_name.rpartition("\\")[2]
+    return class_name.strip("\\"), children[1][0]
+
+
 def literal_to_expr(value: Any) -> php.Expr:
     """Convert an unwrapped PHP literal (from safe_value) into an AST node."""
     if isinstance(value, dict):
@@ -182,7 +247,21 @@ def literal_to_expr(value: Any) -> php.Expr:
             items.append(php.ArrayItem(value=literal_to_expr(item), key=key_expr))
         return php.ArrayLiteral(items)
     if isinstance(value, (PhpBytes, bytes)):
+        text = bytes(value).decode("latin-1", "replace")
+        constant = _ast_constant_ref(text)
+        if constant is not None:
+            return php.ConstFetch(name=constant)
+        class_const = _ast_class_const_ref(text)
+        if class_const is not None:
+            return php.ClassConstFetch(class_name=class_const[0], const_name=class_const[1])
         return php.Literal(PhpBytes(value))
+    if isinstance(value, str):
+        constant = _ast_constant_ref(value)
+        if constant is not None:
+            return php.ConstFetch(name=constant)
+        class_const = _ast_class_const_ref(value)
+        if class_const is not None:
+            return php.ClassConstFetch(class_name=class_const[0], const_name=class_const[1])
     return php.Literal(value)
 
 

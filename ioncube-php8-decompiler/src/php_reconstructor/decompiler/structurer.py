@@ -34,7 +34,9 @@ class RangeDecompiler:
         self.ctx = ctx
         self.ops = ctx.ops
         self._active_try_catches: set[int] = set()
+        self._consumed_try_ops: set[int] = set()
         self._active_finally_ops: set[int] = set()
+        self._active_switches: set[int] = set()
 
     # -- public entry --------------------------------------------------------
 
@@ -51,10 +53,21 @@ class RangeDecompiler:
     # -- range walker --------------------------------------------------------
 
     def decompile_range(self, start: int, end: int) -> None:
-        """Decompile ops[start..end] (inclusive) into the current sink."""
+        """Decompile ops[start..end] (inclusive) into the current sink.
+
+        A handler that returns an index at or before the current one would spin
+        forever while the statement sink grows without bound, so a backwards
+        return is treated as a structurer bug: warn once, then advance.
+        """
         i = start
         while i <= end:
-            i = self.step(i, end)
+            nxt = self.step(i, end)
+            if not isinstance(nxt, int) or nxt <= i:
+                self.ctx.warn(
+                    f"op {i}: structurer returned {nxt!r}; forcing progress"
+                )
+                nxt = i + 1
+            i = nxt
 
     def decompile_into(self, start: int, end: int) -> list[php.Stmt]:
         self.ctx.push_sink()
@@ -239,13 +252,34 @@ class RangeDecompiler:
             if then_value is not None and then_key is not None:
                 # Not a ternary after all: rematerialize the then value.
                 self.ctx.temps[then_key] = then_value
+            if not then_body and else_body:
+                # The then region lost its body (targets one op short). Keep the
+                # else branch by inverting the condition instead of emitting a
+                # branch PHP rejects as empty.
+                self.ctx.warn(f"op {i}: empty then body; inverting condition")
+                self.ctx.emit(
+                    i,
+                    php.IfStmt(
+                        cond=php.UnaryOp(op="!", operand=if_cond), then=else_body
+                    ),
+                )
+                return skip
             self.ctx.emit(i, php.IfStmt(cond=if_cond, then=then_body, orelse=else_body))
             return skip
 
         # Plain if.
         then_body = self.decompile_into(i + 1, target - 1)
+        if not then_body:
+            self.ctx.warn(f"op {i}: empty if body dropped")
+            self._emit_condition_only(i, if_cond)
+            return target
         self.ctx.emit(i, php.IfStmt(cond=if_cond, then=then_body))
         return target
+
+    def _emit_condition_only(self, i: int, cond: php.Expr) -> None:
+        """Preserve a condition's side effects when its body is empty."""
+        if isinstance(cond, (php.UnaryOp, php.BinaryOp, php.FuncCall, php.MethodCall)):
+            self.ctx.emit(i, php.ExprStmt(expr=cond))
 
     def _region_entered_from(
         self, body_start: int, body_end: int, region_start: int, region_end: int
@@ -614,6 +648,30 @@ class RangeDecompiler:
 
     # -- switch ------------------------------------------------------------------
 
+    _CONSTANT_LABEL_TYPES = (
+        php.Literal,
+        php.ConstFetch,
+        php.ClassConstFetch,
+    )
+
+    def _usable_case_label(self, label: php.Expr, op_index: int) -> php.Expr:
+        """Return a label PHP accepts, or a placeholder when decode lost it.
+
+        A CASE whose operand was popped from the wrong temp slot yields the
+        previous comparison (`$tmp == A == B`) or a bare `$tmp`. Neither is a
+        case value, so the case body is kept under an explicit placeholder
+        rather than emitting a switch PHP refuses to parse.
+        """
+        if isinstance(label, self._CONSTANT_LABEL_TYPES):
+            return label
+        if isinstance(label, php.UnaryOp) and isinstance(label.operand, self._CONSTANT_LABEL_TYPES):
+            return label
+        self.ctx.warn(
+            f"op {op_index}: CASE label is not a constant "
+            f"({type(label).__name__}); emitting placeholder"
+        )
+        return php.Literal(None)
+
     def _starts_case_chain(self, i: int, end: int) -> bool:
         """A bare CASE (no preceding SWITCH opcode) that begins a dispatch."""
         return (
@@ -642,6 +700,13 @@ class RangeDecompiler:
         subject_key = op.op1.temp_key
         subject = self.ctx.resolve(op.op1, op)
 
+        if i in self._active_switches:
+            # A case body that reaches this dispatch again cannot shrink the
+            # range; recursing would nest forever. Emit the dispatch as a
+            # comment instead of blowing the stack.
+            self.ctx.emit(i, php.OpcodeComment(i, op.name, "recursive switch"))
+            return i + 1
+
         scan = i + 1 if op.name in ("ZEND_SWITCH_STRING", "ZEND_SWITCH_LONG") else i
         raw_pairs: list[tuple[php.Expr, object, int]] = []
         default_target: int | None = None
@@ -657,6 +722,7 @@ class RangeDecompiler:
                         if cur.op2.is_const
                         else self.ctx.resolve(cur.op2, cur)
                     )
+                    label = self._usable_case_label(label, cur.index)
                     raw_pairs.append((label, raw_label, nxt.jump_targets[0]))
                     j += 2
                     continue
@@ -698,10 +764,12 @@ class RangeDecompiler:
             LoopInfo(break_targets={switch_end}, continue_targets=set())
         )
         cases: list[php.SwitchCase] = []
+        self._active_switches.add(i)
         for idx, (label, target) in enumerate(entries):
             body_end = entries[idx + 1][1] - 1 if idx + 1 < len(entries) else switch_end - 1
             body = self.decompile_into(target, body_end)
             cases.append(php.SwitchCase(test=label, body=body))
+        self._active_switches.discard(i)
         self.ctx.loop_stack.pop()
 
         self.ctx.emit(i, php.SwitchStmt(subject=subject, cases=cases))
@@ -805,6 +873,8 @@ class RangeDecompiler:
     # -- try / catch -------------------------------------------------------------
 
     def _try_catch_at(self, i: int, end: int) -> int | None:
+        if i in self._consumed_try_ops:
+            return None
         entry = next(
             (
                 e
@@ -818,12 +888,24 @@ class RangeDecompiler:
         if entry is None:
             return None
 
-        has_catch = (
-            entry.catch_op is not None
-            and i < entry.catch_op <= end
-            and entry.catch_op < len(self.ops)
-            and self.ops[entry.catch_op].name == "ZEND_CATCH"
-        )
+        # Each catch clause gets its own try_catch entry pointing at the same
+        # try_op. Collecting them here keeps the chain inside one TryStmt
+        # instead of wrapping it in extra try blocks that have no catch.
+        catch_indexes: list[int] = []
+        for candidate in self.ctx.op_array.try_catch:
+            if candidate.try_op != i or candidate.catch_op is None:
+                continue
+            index = candidate.catch_op
+            if (
+                i < index <= end
+                and index < len(self.ops)
+                and self.ops[index].name == "ZEND_CATCH"
+                and index not in catch_indexes
+            ):
+                catch_indexes.append(index)
+        catch_indexes.sort()
+
+        has_catch = bool(catch_indexes)
         # A real finally block is entered through ZEND_FAST_CALL, which targets
         # the first op of the block.  try_catch entries without that guard point
         # at ordinary oplines and must keep flowing through the normal paths.
@@ -842,7 +924,7 @@ class RangeDecompiler:
         if not has_catch and not has_finally:
             return None
 
-        catch_op_index = entry.catch_op if has_catch else None
+        catch_op_index = catch_indexes[0] if catch_indexes else None
         finally_op_index = entry.finally_op if has_finally else None
 
         try_end = (catch_op_index - 1) if catch_op_index is not None else (finally_op_index or end + 1) - 1
@@ -859,6 +941,23 @@ class RangeDecompiler:
             after = self._jmp_target(try_end)
             try_end -= 1
 
+        # PHP repeats the try_catch record for every handler it attaches, but
+        # some ionCube builds emit the later clauses as bare ZEND_CATCH ops
+        # (each preceded by the previous body's jump to the join point). Absorb
+        # those so the chain stays one try instead of becoming a stray goto.
+        if catch_indexes:
+            join = after if after is not None else (finally_op_index or (end + 1))
+            scan = catch_indexes[-1] + 1
+            while scan < join and scan < len(self.ops):
+                if (
+                    self.ops[scan].name == "ZEND_CATCH"
+                    and scan not in catch_indexes
+                    and self.ops[scan - 1].name == "ZEND_JMP"
+                    and join in self.ops[scan - 1].jump_targets
+                ):
+                    catch_indexes.append(scan)
+                scan += 1
+
         finally_body: list[php.Stmt] | None = None
         if finally_op_index is not None:
             finally_stop = end + 1
@@ -867,14 +966,19 @@ class RangeDecompiler:
             finally_body = self.decompile_into(finally_op_index, finally_stop - 1)
 
         self._active_try_catches.add(id(entry))
+        self._consumed_try_ops.add(i)
         if finally_op_index is not None:
             self._active_finally_ops.add(finally_op_index)
         try:
             try_body = self.decompile_into(i, try_end)
             catches: list[php.CatchClause] = []
-            if catch_op_index is not None:
-                catch_op = self.ops[catch_op_index]
-                class_name = catch_op.op1.const_value() if catch_op.op1.is_const else None
+            for position, op_index in enumerate(catch_indexes):
+                catch_op = self.ops[op_index]
+                class_names = catch_op.op1.const_value() if catch_op.op1.is_const else None
+                if isinstance(class_names, str):
+                    class_names = [class_names]
+                elif not isinstance(class_names, list) or not class_names:
+                    class_names = None
                 # PHP 7.2 keeps the exception CV in op2, later builds in result.
                 if catch_op.result.is_cv:
                     var_name = self.ctx.cv_name(catch_op.result)
@@ -882,20 +986,23 @@ class RangeDecompiler:
                     var_name = self.ctx.cv_name(catch_op.op2)
                 else:
                     var_name = None
-                catch_last = (finally_op_index - 1) if finally_op_index is not None else ((after - 1) if after is not None else end)
-                if (
-                    catch_last > catch_op_index
-                    and self.ops[catch_last].name == "ZEND_JMP"
-                    and self.ops[catch_last - 1].name == "ZEND_FAST_CALL"
-                ):
-                    catch_last -= 2
-                elif catch_last > catch_op_index and self.ops[catch_last].name == "ZEND_FAST_CALL":
-                    catch_last -= 1
+                if position + 1 < len(catch_indexes):
+                    catch_last = catch_indexes[position + 1] - 1
+                else:
+                    catch_last = (finally_op_index - 1) if finally_op_index is not None else ((after - 1) if after is not None else end)
+                    if (
+                        catch_last > op_index
+                        and self.ops[catch_last].name == "ZEND_JMP"
+                        and self.ops[catch_last - 1].name == "ZEND_FAST_CALL"
+                    ):
+                        catch_last -= 2
+                    elif catch_last > op_index and self.ops[catch_last].name == "ZEND_FAST_CALL":
+                        catch_last -= 1
                 catches.append(
                     php.CatchClause(
-                        class_names=[class_name if isinstance(class_name, str) else "Exception"],
+                        class_names=class_names or ["Exception"],
                         var_name=var_name,
-                        body=self.decompile_into(catch_op_index + 1, catch_last),
+                        body=self.decompile_into(op_index + 1, catch_last),
                     )
                 )
         finally:

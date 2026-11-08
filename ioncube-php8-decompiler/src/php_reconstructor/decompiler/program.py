@@ -113,6 +113,7 @@ def decompile_class(class_info: PhpClassInfo, program: Program) -> tuple[php.Cla
         is_abstract=class_info.is_abstract,
         is_final=class_info.is_final,
         is_interface=class_info.is_interface,
+        is_trait=class_info.is_trait,
         doc_comment=class_info.doc_comment,
     )
     for const_name, value in class_info.constants.items():

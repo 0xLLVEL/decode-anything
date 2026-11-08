@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import re
+
 from ... import ast as php
 from ...decompiler.context import DecompileContext
 from ...opcode import Opcode
 from ...opcode.constants import ZEND_ISEMPTY
+from ...utils import is_valid_php_identifier
 from . import opcode_handler
+
+_CLASS_REF_RE = re.compile(r"^\\?[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*(?:\\[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)*$")
+
+
+def _is_class_ref(name: str) -> bool:
+    """True when ``name`` can appear left of ``::`` in generated PHP."""
+    return bool(_CLASS_REF_RE.match(name))
 
 
 @opcode_handler("ZEND_FETCH_R", "ZEND_FETCH_W", "ZEND_FETCH_RW", "ZEND_FETCH_IS",
@@ -44,6 +54,12 @@ def handle_fetch_this(ctx: DecompileContext, op: Opcode) -> None:
 def handle_fetch_dim(ctx: DecompileContext, op: Opcode) -> None:
     index = None if op.op2.is_unused else ctx.resolve(op.op2, op)
     container = ctx.resolve(op.op1, op)
+    if index is None:
+        # A read never appends; `$x[]` here is an index whose operand decode
+        # failed, so keep the container and drop the missing dimension.
+        ctx.warn(f"op {op.index}: {op.name} without an index operand")
+        ctx.store(op.result, container, op)
+        return
     ctx.store(op.result, php.DimFetch(target=container, index=index), op)
 
 
@@ -66,12 +82,11 @@ def handle_fetch_obj(ctx: DecompileContext, op: Opcode) -> None:
 def handle_fetch_static_prop(ctx: DecompileContext, op: Opcode) -> None:
     prop = op.op1.const_value() if op.op1.is_const else None
     cls = op.op2.const_value() if op.op2.is_const else None
+    class_name = cls if isinstance(cls, str) and _is_class_ref(cls) else "static"
+    prop_name = prop if isinstance(prop, str) and is_valid_php_identifier(prop) else "unknownProperty"
     ctx.store(
         op.result,
-        php.StaticPropertyFetch(
-            class_name=cls if isinstance(cls, str) else "static",
-            name=prop if isinstance(prop, str) else "?",
-        ),
+        php.StaticPropertyFetch(class_name=class_name, name=prop_name),
         op,
     )
 
@@ -117,13 +132,20 @@ def handle_fetch_class(ctx: DecompileContext, op: Opcode) -> None:
 
 @opcode_handler("ZEND_INSTANCEOF")
 def handle_instanceof(ctx: DecompileContext, op: Opcode) -> None:
+    operand = ctx.resolve(op.op1, op)
     if op.op2.is_const:
         cls = op.op2.const_value()
         class_name: object = cls if isinstance(cls, str) else "?"
     else:
         resolved = ctx.resolve(op.op2, op)
         class_name = resolved.name if isinstance(resolved, php.ConstFetch) else resolved
-    ctx.store(op.result, php.InstanceOf(operand=ctx.resolve(op.op1, op), class_name=class_name), op)
+    if not isinstance(class_name, str):
+        # `instanceof static::API_VERSION` is a parse error: the right operand
+        # is a constant reference, so the comparison is an equality test.
+        ctx.warn(f"op {op.index}: INSTANCEOF on a non-class operand")
+        ctx.store(op.result, php.BinaryOp(op="===", left=operand, right=class_name), op)
+        return
+    ctx.store(op.result, php.InstanceOf(operand=operand, class_name=class_name), op)
 
 
 def _isset_or_empty(ctx: DecompileContext, op: Opcode, target: php.Expr) -> None:
@@ -150,8 +172,12 @@ def handle_isset_var(ctx: DecompileContext, op: Opcode) -> None:
 
 @opcode_handler("ZEND_ISSET_ISEMPTY_DIM_OBJ")
 def handle_isset_dim(ctx: DecompileContext, op: Opcode) -> None:
-    index = ctx.resolve(op.op2, op)
     container = ctx.resolve(op.op1, op)
+    if op.op2.is_unused:
+        ctx.warn(f"op {op.index}: ISSET_ISEMPTY_DIM_OBJ without an index operand")
+        _isset_or_empty(ctx, op, container)
+        return
+    index = ctx.resolve(op.op2, op)
     _isset_or_empty(ctx, op, php.DimFetch(target=container, index=index))
 
 
@@ -167,10 +193,27 @@ def handle_unset_cv(ctx: DecompileContext, op: Opcode) -> None:
     ctx.emit(op.index, php.UnsetStmt(exprs=[php.Variable(ctx.cv_name(op.op1))]))
 
 
+_WRITABLE_TARGETS = (
+    php.Variable,
+    php.TempVar,
+    php.DimFetch,
+    php.PropertyFetch,
+    php.StaticPropertyFetch,
+)
+
+
 @opcode_handler("ZEND_UNSET_DIM")
 def handle_unset_dim(ctx: DecompileContext, op: Opcode) -> None:
     index = ctx.resolve(op.op2, op)
     container = ctx.resolve(op.op1, op)
+    if not isinstance(container, _WRITABLE_TARGETS):
+        # A dropped temp can leave a literal here; `unset(0[...])` is a fatal.
+        ctx.warn(
+            f"op {op.index}: UNSET_DIM container is "
+            f"{type(container).__name__}; skipping"
+        )
+        ctx.emit(op.index, php.OpcodeComment(op.index, op.name, "unresolved container"))
+        return
     ctx.emit(op.index, php.UnsetStmt(exprs=[php.DimFetch(target=container, index=index)]))
 
 

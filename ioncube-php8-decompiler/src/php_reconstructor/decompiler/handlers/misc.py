@@ -176,14 +176,42 @@ def handle_defined(ctx: DecompileContext, op: Opcode) -> None:
     )
 
 
+def _next_anonymous_class_name(ctx: DecompileContext) -> str:
+    """Name of the reconstructed class for a ZEND_DECLARE_ANON_CLASS.
+
+    ionCube stores the runtime name (`class@anonymous\\0file:line$n`) in op1,
+    which is not a valid PHP identifier, while the class body is reconstructed
+    separately and named (e.g. `Class1`). The class table keeps declaration
+    order, so an anonymous declaration is matched by position.
+    """
+    program = ctx.program
+    entries = list(program.classes.values()) if program is not None else []
+    cursor = getattr(ctx, "anon_class_cursor", 0)
+    if cursor < len(entries):
+        ctx.anon_class_cursor = cursor + 1
+        name = getattr(entries[cursor], "name", None)
+        if isinstance(name, str) and name:
+            return name
+    ctx.warn("anonymous class has no reconstructed body; using \\stdClass")
+    return "\\stdClass"
+
+
 @opcode_handler("ZEND_DECLARE_CLASS", "ZEND_DECLARE_CLASS_DELAYED",
                 "ZEND_DECLARE_INHERITED_CLASS", "ZEND_DECLARE_INHERITED_CLASS_DELAYED",
                 "ZEND_DECLARE_CONST", "ZEND_DECLARE_ANON_CLASS")
 def handle_declare(ctx: DecompileContext, op: Opcode) -> None:
     # Declarations are reconstructed from function/class tables, not opcodes.
-    if not op.result.is_unused and op.result.temp_key is not None:
-        name = op.op1.const_value() if op.op1.is_const else None
-        ctx.store(op.result, php.ConstFetch(name=name if isinstance(name, str) else "?"), op)
+    if op.result.is_unused or op.result.temp_key is None:
+        return
+    name = op.op1.const_value() if op.op1.is_const else None
+    if isinstance(name, str) and name and "@anonymous" not in name:
+        ctx.store(op.result, php.ConstFetch(name=name), op)
+        return
+    if op.name == "ZEND_DECLARE_ANON_CLASS":
+        ctx.store(op.result, php.ConstFetch(name=_next_anonymous_class_name(ctx)), op)
+        return
+    ctx.warn(f"op {op.index}: {op.name} without a usable class name")
+    ctx.store(op.result, php.ConstFetch(name="\\stdClass"), op)
 
 
 @opcode_handler("ZEND_DECLARE_FUNCTION")

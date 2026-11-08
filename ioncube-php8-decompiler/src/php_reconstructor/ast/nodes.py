@@ -433,6 +433,7 @@ class ClassDecl(Stmt):
     is_abstract: bool = False
     is_final: bool = False
     is_interface: bool = False
+    is_trait: bool = False
     constants: list[ClassConstDecl] = field(default_factory=list)
     properties: list[PropertyDecl] = field(default_factory=list)
     methods: list[MethodDecl] = field(default_factory=list)

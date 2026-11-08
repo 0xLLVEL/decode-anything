@@ -9,7 +9,36 @@ from ...opcode.constants import ASSIGN_OP_BINOPS, BINARY_OPS, CAST_TYPES
 from . import opcode_handler
 
 
+def _is_lvalue(expr: php.Expr) -> bool:
+    """True when the expression may appear on the left of ``=``.
+
+    A dimension write needs a writable base: ``$a[0]`` is an lvalue, ``f()[0]``
+    and ``(expr)[0]`` are not. Opcode decode that lost the base produces
+    expressions PHP rejects outright, so they must not reach the emitter.
+    """
+    if isinstance(expr, (php.Variable, php.TempVar, php.ArrayLiteral)):
+        return True
+    if isinstance(expr, (php.PropertyFetch, php.StaticPropertyFetch)):
+        return True
+    if isinstance(expr, php.DimFetch):
+        return _is_lvalue(expr.target)
+    return False
+
+
 def _emit_assign(ctx: DecompileContext, op: Opcode, assign: php.Assign) -> None:
+    if not _is_lvalue(assign.target):
+        # Opcode decode lost the lvalue (op1 was a TMP with no producer). The
+        # assigned value is what the next consumer expects, so pass it through
+        # instead of emitting `expr = value`, which is not valid PHP.
+        ctx.warn(
+            f"op {op.index}: assignment target "
+            f"{type(assign.target).__name__} is not an lvalue; keeping the value"
+        )
+        if has_side_effects(assign.value):
+            ctx.emit(op.index, php.ExprStmt(assign.value))
+        if not op.result.is_unused:
+            ctx.store(op.result, assign.value, op)
+        return
     ctx.emit(op.index, php.ExprStmt(assign))
     if not op.result.is_unused:
         # Chained assignment ($a = $b = ...): later consumers read the target.
@@ -169,6 +198,16 @@ def handle_qm_assign(ctx: DecompileContext, op: Opcode) -> None:
 
 def _inc_dec(ctx: DecompileContext, op: Opcode, operator: str, prefix: bool) -> None:
     target = ctx.resolve(op.op1, op)
+    if not _is_lvalue(target) or isinstance(target, php.ArrayLiteral):
+        # A literal cannot be incremented; keep the value and drop the operator.
+        ctx.warn(
+            f"op {op.index}: {op.name} target is "
+            f"{type(target).__name__}; emitting plain value"
+        )
+        if op.result.is_unused:
+            return
+        ctx.store(op.result, target, op)
+        return
     expr = php.IncDec(target=target, op=operator, is_prefix=prefix)
     if op.result.is_unused:
         ctx.emit(op.index, php.ExprStmt(expr))

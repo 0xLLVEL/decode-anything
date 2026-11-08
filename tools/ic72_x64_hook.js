@@ -1,28 +1,27 @@
 const MODULE = "ioncube_loader_win_7.2.dll";
 let installed = false;
+function hx(p, n) {
+  const b = new Uint8Array(p.readByteArray(n));
+  return [...b].map((x) => x.toString(16).padStart(2, "0")).join(" ");
+}
 function install(m) {
   if (installed) return;
   installed = true;
   const base = m.base;
   console.log(`[hook] base=${base}`);
-  let n = 0;
-  Interceptor.attach(base.add(0x9D340), {
+  Interceptor.attach(base.add(0xA1090), {
     onEnter() {
-      n++;
-      this.n = n;
-      if (n > 3) return;
-      const s = this.context.rcx;
-      this.s = s;
-      const f = [];
-      for (let i = 0; i < 4; i++) f.push("0x" + s.add(i * 4).readU32().toString(16).padStart(8, "0"));
-      console.log(`[d340#${n}] state=${s} ra=0x${this.returnAddress.sub(base).toString(16)} st=[${f.join(" ")}]`);
+      const c = this.context;
+      const size = c.r8.toInt32();
+      if (size < 400) return;
+      this.dst = c.rdx;
+      this.size = size;
+      this.on = true;
+      console.log(`[read] dst=${c.rdx} size=${size}`);
     },
-    onLeave(retval) {
-      if (this.n > 3) return;
-      const s = this.s;
-      const f = [];
-      for (let i = 0; i < 4; i++) f.push("0x" + s.add(i * 4).readU32().toString(16).padStart(8, "0"));
-      console.log(`   ret=0x${(retval.toInt32() >>> 0).toString(16).padStart(8, "0")}  st'=[${f.join(" ")}]`);
+    onLeave() {
+      if (!this.on) return;
+      console.log(`[read] plain ${hx(this.dst, Math.min(this.size, 640))}`);
     },
   });
 }

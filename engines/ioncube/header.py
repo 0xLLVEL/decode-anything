@@ -296,11 +296,13 @@ def decode_payload_body(
         "control_markers": 0,
     }
 
+    frame_marks: list[tuple[int, int, int]] = []
     while position < len(payload):
         if position + 2 > len(payload):
             raise ValueError("truncated body frame header")
 
         frame_start = position
+        frame_marks.append((frame_start, len(compressed), checksum))
         flag = payload[position]
         second = payload[position + 1]
         position += 2
@@ -308,7 +310,10 @@ def decode_payload_body(
         if flag < 0x80:
             encrypted_end = position + second
             if encrypted_end > len(payload):
-                raise ValueError("truncated encrypted body chunk")
+                # Some builds pad the final chunk length beyond the file end;
+                # the encrypted bytes that exist are still the whole payload.
+                encrypted_end = len(payload)
+                event_counts["truncated_final_chunk"] = 1
             checksum = update_loader_checksum(
                 checksum, payload[frame_start:encrypted_end]
             )
@@ -365,6 +370,21 @@ def decode_payload_body(
     inflater = zlib.decompressobj(wbits=-15)
     decompressed = inflater.decompress(bytes(compressed))
     decompressed += inflater.flush()
+    if not inflater.eof:
+        # The frame stream can carry trailing bytes the loader ignores (an
+        # appended checksum block in PHP 8.2 builds). Fall back to the longest
+        # prefix of frames that inflates to a complete DEFLATE stream.
+        for mark_index in range(len(frame_marks) - 1, 0, -1):
+            cut = frame_marks[mark_index][1]
+            if cut <= 0 or cut >= len(compressed):
+                continue
+            trial = zlib.decompressobj(wbits=-15)
+            trial_out = trial.decompress(bytes(compressed[:cut])) + trial.flush()
+            if trial.eof:
+                decompressed = trial_out
+                inflater = trial
+                event_counts["dropped_trailing_frames"] = len(frame_marks) - mark_index
+                break
     if not inflater.eof:
         raise ValueError("raw DEFLATE body did not reach end-of-stream")
     if inflater.unused_data or inflater.unconsumed_tail:
@@ -570,10 +590,28 @@ def parse_header_trailer(data: bytes) -> HeaderTrailer:
     )
 
 
+def _hrc_payload_markers(source: bytes) -> list[int]:
+    """Locate real HR+c payload starts.
+
+    The base64 alphabet contains every character of ``HR+c``, so the literal
+    sequence also occurs at random inside encoded data. A genuine marker always
+    follows the previous section's terminator: ``?>`` for the first bundle and
+    the padding ``=`` that closes the preceding base64 run.
+    """
+
+    markers: list[int] = []
+    for match in re.finditer(b"HR\\+c", source):
+        start = match.start()
+        prefix = source[max(0, start - 16) : start].rstrip()
+        if prefix.endswith((b"=", b">")):
+            markers.append(start)
+    return markers
+
+
 def get_hrc_payload_slice(
     source: bytes, target_php: int | None = None, index: int = 0
 ) -> tuple[int, bytes]:
-    markers = [m.start() for m in re.finditer(b"HR\\+c", source)]
+    markers = _hrc_payload_markers(source)
     if not markers:
         raise ValueError("HR+c marker not found")
 

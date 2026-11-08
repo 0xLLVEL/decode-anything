@@ -326,6 +326,7 @@ class PhpClassInfo:
     is_abstract: bool = False
     is_final: bool = False
     is_interface: bool = False
+    is_trait: bool = False
     constants: dict[str, Any] = field(default_factory=dict)
     properties: list[PhpProperty] = field(default_factory=list)
     methods: dict[str, str] = field(default_factory=dict)  # method name -> op_array id

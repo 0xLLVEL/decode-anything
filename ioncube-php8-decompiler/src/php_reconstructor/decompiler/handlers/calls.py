@@ -27,6 +27,10 @@ def _const_str(ctx: DecompileContext, op: Opcode, operand) -> object:
         if isinstance(value, str):
             return value
     if operand.is_unused:
+        ctx.warn(
+            f"op {op.index}: unused class/name operand on {op.name}"
+            f" (op1={op.op1!r} op2={op.op2!r})"
+        )
         return "?"
     return ctx.resolve(operand, op)
 

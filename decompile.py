@@ -566,6 +566,7 @@ def _extract_and_apply_imports(
     declared_classes: set[str] | None = None,
 ) -> str:
     declared_classes = declared_classes or set()
+    declared_lower = {name.lower() for name in declared_classes}
     tok_pattern = re.compile(r"('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|/\*[\s\S]*?\*/|//[^\n]*)")
     parts = tok_pattern.split(php_code)
 
@@ -591,7 +592,7 @@ def _extract_and_apply_imports(
         ns_of_class = '\\'.join(parts_fqcn[:-1])
         if namespace and ns_of_class.lower() == namespace.lower():
             continue
-        if short in declared_classes:
+        if short.lower() in declared_lower:
             continue
         if short in imports:
             collisions.add(short)
@@ -603,7 +604,7 @@ def _extract_and_apply_imports(
 
     # Auto-detect unimported standard Laravel facades
     for short, fqcn in LARAVEL_FACADES.items():
-        if short in declared_classes or short in imports or short in collisions:
+        if short.lower() in declared_lower or short in imports or short in collisions:
             continue
         parts_fqcn = fqcn.split('\\')
         ns_of_class = '\\'.join(parts_fqcn[:-1])
@@ -625,7 +626,7 @@ def _extract_and_apply_imports(
     global_imports: set[str] = set()
     if namespace:
         for short in PHP_GLOBAL_CLASSES:
-            if short in declared_classes or short in imports or short in collisions:
+            if short.lower() in declared_lower or short in imports or short in collisions:
                 continue
             used = re.compile(r"(?<![A-Za-z0-9_\\$>:])" + re.escape(short) + r"\b")
             if any(used.search(parts[i]) for i in range(0, len(parts), 2)):
@@ -908,6 +909,7 @@ def clean_php_source(raw_php: str, *, strict_types: bool = False) -> str:
 
     # 5. Extract and apply imports (use statements)
     raw_php = _extract_and_apply_imports(raw_php, namespace=namespace, declared_classes=declared_classes)
+    raw_php = _drop_shadowing_uses(raw_php)
 
     # After the imports: in a namespace-less file they sit right below `<?php`.
     if strict_types:
@@ -919,6 +921,112 @@ def clean_php_source(raw_php: str, *, strict_types: bool = False) -> str:
     return raw_php
 
 
+def _drop_shadowing_uses(code: str) -> str:
+    """Delete `use` imports whose alias is redefined by a declaration here.
+
+    PHP classes are case-insensitive, so `use Crypt\\AES;` next to
+    `class Aes` is a fatal redeclaration rather than a harmless import.
+    """
+    declared = {
+        name.lower()
+        for name in re.findall(
+            r"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+([A-Za-z0-9_\x80-\xff]+)",
+            code,
+            re.MULTILINE,
+        )
+    }
+    if not declared:
+        return code
+    out: list[str] = []
+    for line in code.splitlines():
+        match = re.match(r"^\s*use\s+([A-Za-z0-9_\\\x80-\xff]+)\s*;\s*$", line)
+        if match and match.group(1).split("\\")[-1].lower() in declared:
+            continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if code.endswith("\n") else "")
+
+
+def _brace_depths(lines: list[str]) -> list[int]:
+    """Brace nesting depth at the start of each line, ignoring strings/comments."""
+    depths: list[int] = []
+    depth = 0
+    for line in lines:
+        depths.append(depth)
+        masked = re.sub(r"'(?:[^'\\]|\\.)*'", "''", line)
+        masked = re.sub(r'"(?:[^"\\]|\\.)*"', '""', masked)
+        masked = re.sub(r"/\*.*?\*/", "", masked)
+        masked = re.sub(r"//.*$", "", masked)
+        depth += masked.count("{") - masked.count("}")
+        if depth < 0:
+            depth = 0
+    return depths
+
+
+_LOOP_OPENER = re.compile(
+    r"^\s*(?:do\s*\{|while\s*\(.*\)\s*\{|for\s*\(.*\)\s*\{|foreach\s*\(.*\)\s*\{|switch\s*\(.*\)\s*\{)"
+)
+
+
+def _loop_body_ranges(lines: list[str]) -> list[tuple[int, int]]:
+    """Line ranges (1-based, inclusive) covered by a loop or switch body."""
+    ranges: list[tuple[int, int]] = []
+    for index, line in enumerate(lines):
+        if not _LOOP_OPENER.match(line):
+            continue
+        masked = re.sub(r"'(?:[^'\\]|\\.)*'", "''", line)
+        masked = re.sub(r'"(?:[^"\\]|\\.)*"', '""', masked)
+        masked = re.sub(r"//.*$", "", masked)
+        depth = masked.count("{") - masked.count("}")
+        if depth <= 0:
+            continue
+        start = index + 2  # first line inside the body, 1-based
+        for close_index in range(index + 1, len(lines)):
+            text = lines[close_index]
+            masked_close = re.sub(r"'(?:[^'\\]|\\.)*'", "''", text)
+            masked_close = re.sub(r'"(?:[^"\\]|\\.)*"', '""', masked_close)
+            masked_close = re.sub(r"//.*$", "", masked_close)
+            depth += masked_close.count("{") - masked_close.count("}")
+            if depth <= 0:
+                ranges.append((start, close_index + 1))
+                break
+    return ranges
+
+
+def _labels_enterable_from_their_gotos(code: str, *, lines: list[str]) -> set[str]:
+    """Labels a `goto` may legally reach.
+
+    PHP refuses a jump that enters a loop or switch body, and that is what a
+    label living inside a loop body the `goto` is not in means here. Those
+    labels are dropped so `_drop_undefined_gotos` can fall through instead of
+    emitting a fatal.
+    """
+    label_line: dict[str, int] = {}
+    for index, line in enumerate(lines):
+        match = re.match(r"^\s*label_(\d+):", line)
+        if match:
+            label_line[match.group(1)] = index + 1
+    bodies = _loop_body_ranges(lines)
+    depths = _brace_depths(lines)
+    enterable: set[str] = set()
+    blocked: set[str] = set()
+    for index, line in enumerate(lines):
+        match = re.match(r"^\s*goto\s+label_(\d+);\s*$", line)
+        if not match or match.group(1) not in label_line:
+            continue
+        name = match.group(1)
+        goto_line = index + 1
+        target_line = label_line[name]
+        inside_loop = any(
+            start <= target_line <= end and not (start <= goto_line <= end)
+            for start, end in bodies
+        )
+        if inside_loop or depths[target_line - 1] > depths[index]:
+            blocked.add(name)
+        else:
+            enterable.add(name)
+    return enterable - blocked
+
+
 def _drop_undefined_gotos(code: str) -> str:
     """Remove gotos whose label was never emitted.
 
@@ -926,7 +1034,7 @@ def _drop_undefined_gotos(code: str) -> str:
     the goto would make the file fatal at compile time. Falling through is the
     only interpretation left for such a jump.
     """
-    defined = set(re.findall(r"^\s*label_(\d+):", code, re.MULTILINE))
+    defined = set(_labels_enterable_from_their_gotos(code, lines=code.splitlines()))
     trailing_newline = code.endswith("\n")
     lines = code.splitlines()
     out: list[str] = []
@@ -1010,12 +1118,18 @@ def _reindent_php(code: str) -> str:
 
 
 def is_ioncube_file(path: Path) -> bool:
-    """Check if a file contains the IonCube binary header marker (HR+c)."""
+    """Check if a file carries the IonCube container markers.
+
+    ICB0 files put the payload far past the first bytes, behind a plaintext
+    header block, so the HR+c scan needs more than a 2 KB window and the ICB0
+    banner must be recognised on its own.
+    """
     try:
-        content = path.read_bytes()[:2048]
-        return b"HR+c" in content
+        with path.open("rb") as fh:
+            head = fh.read(4096)
     except Exception:
         return False
+    return b"ICB0" in head or b"HR+c" in head
 
 
 def is_sourceguardian_file(path: Path) -> bool:

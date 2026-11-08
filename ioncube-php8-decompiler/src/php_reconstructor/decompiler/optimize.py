@@ -41,7 +41,56 @@ def _optimize_stmts(stmts: list[php.Stmt]) -> list[php.Stmt]:
     stmts = _reconstruct_switches(stmts)
     stmts = _lift_terminating_else(stmts)
     stmts = _drop_dead_code_after_terminal(stmts)
+    stmts = [_repair_empty_branches(stmt) for stmt in stmts]
+    stmts = _drop_dead_code_after_terminal(stmts)
     return _drop_redundant_gotos(stmts)
+
+
+def _is_comment_only(stmt: php.Stmt) -> bool:
+    return isinstance(stmt, (php.CommentStmt, php.OpcodeComment))
+
+
+def _repair_empty_branches(stmt: php.Stmt) -> php.Stmt:
+    """Re-run branch repair after passes that can empty a block.
+
+    `_drop_dead_code_after_terminal` and friends run after `_normalize_if`, and
+    they can leave a branch with no statements at all. A branch holding only
+    opcode comments counts as empty too: `clean_php_source` strips comments,
+    which is what turns a reconstructed branch into a fatal empty block.
+    """
+    if isinstance(stmt, php.IfStmt):
+        stmt.then = [_repair_empty_branches(s) for s in stmt.then]
+        stmt.elifs = [(cond, [_repair_empty_branches(s) for s in body]) for cond, body in stmt.elifs]
+        stmt.orelse = [_repair_empty_branches(s) for s in stmt.orelse]
+        if all(_is_comment_only(s) for s in stmt.then):
+            stmt.then = []
+        stmt.elifs = [
+            (cond, body) for cond, body in stmt.elifs if not all(_is_comment_only(s) for s in body)
+        ]
+        if all(_is_comment_only(s) for s in stmt.orelse):
+            stmt.orelse = []
+        return _normalize_if(stmt)
+    if isinstance(stmt, (php.WhileStmt, php.DoWhileStmt)):
+        stmt.body = [_repair_empty_branches(s) for s in stmt.body]
+    elif isinstance(stmt, php.ForeachStmt):
+        stmt.body = [_repair_empty_branches(s) for s in stmt.body]
+    elif isinstance(stmt, php.SwitchStmt):
+        for case in stmt.cases:
+            case.body = _drop_dead_code_after_terminal(
+                [_repair_empty_branches(s) for s in case.body]
+            )
+    elif isinstance(stmt, php.TryStmt):
+        stmt.body = [_repair_empty_branches(s) for s in stmt.body]
+        for clause in stmt.catches:
+            clause.body = [_repair_empty_branches(s) for s in clause.body]
+        if stmt.finally_body is not None:
+            stmt.finally_body = [_repair_empty_branches(s) for s in stmt.finally_body]
+    elif isinstance(stmt, php.FunctionDecl):
+        stmt.body = [_repair_empty_branches(s) for s in stmt.body]
+    elif isinstance(stmt, php.ClassDecl):
+        for method in stmt.methods:
+            method.body = [_repair_empty_branches(s) for s in method.body]
+    return stmt
 
 
 def _lift_terminating_else(stmts: list[php.Stmt]) -> list[php.Stmt]:
@@ -111,6 +160,8 @@ def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
         )
         body = _optimize_stmts(stmt.body)
         body = _normalize_null_returns(body, force=is_void_or_ctor)
+        if _needs_return_value(stmt.return_type, stmt.return_nullable):
+            body = _strip_bare_returns(body)
         stmt.body = _prune_unreferenced_labels(
             _drop_trailing_bare_return(
                 body,
@@ -129,6 +180,8 @@ def _optimize_stmt(stmt: php.Stmt) -> php.Stmt:
             )
             body = _optimize_stmts(method.body)
             body = _normalize_null_returns(body, force=is_void_or_ctor)
+            if _needs_return_value(method.return_type, method.return_nullable):
+                body = _strip_bare_returns(body)
             method.body = _prune_unreferenced_labels(
                 _drop_trailing_bare_return(
                     body,
@@ -255,7 +308,7 @@ def _boolean_context(expr: php.Expr) -> php.Expr:
     return expr
 
 
-def _normalize_if(stmt: php.IfStmt) -> php.IfStmt:
+def _normalize_if(stmt: php.IfStmt) -> php.Stmt:
     if not stmt.then and stmt.orelse and not stmt.elifs:
         stmt.cond = _negate(stmt.cond)
         stmt.then = stmt.orelse
@@ -269,6 +322,19 @@ def _normalize_if(stmt: php.IfStmt) -> php.IfStmt:
         stmt.elifs.append((inner.cond, inner.then))
         stmt.elifs.extend(inner.elifs)
         stmt.orelse = inner.orelse
+    if not stmt.then:
+        if stmt.elifs:
+            # `if (C) {} elseif (D) {...}` never came from source: the then
+            # region lost its body. `if (!C) { if (D) {...} }` is equivalent
+            # and is the only shape PHP accepts here.
+            head_cond, head_body = stmt.elifs[0]
+            inner = php.IfStmt(
+                cond=head_cond, then=head_body, elifs=stmt.elifs[1:], orelse=stmt.orelse
+            )
+            return php.IfStmt(cond=_negate(stmt.cond), then=[inner])
+        # Condition with no body at all: an empty branch is a parse-time fatal,
+        # so keep the condition and give the branch an explicit no-op.
+        stmt.then = [php.ExprStmt(expr=php.RawExpr(""))]
     return stmt
 
 
@@ -382,6 +448,42 @@ def _normalize_null_returns(
     return stmts
 
 
+def _strip_bare_returns(stmts: list[php.Stmt]) -> list[php.Stmt]:
+    """Remove `return;` from a function whose declared type needs a value.
+
+    PHP makes `return;` in a value-returning function a compile-time fatal, and
+    the structurer emits one at every switch-case fallthrough. Dropping it lets
+    the case fall through to the code that follows.
+    """
+    out: list[php.Stmt] = []
+    for stmt in stmts:
+        if isinstance(stmt, php.ReturnStmt) and _is_null_value(stmt.value):
+            continue
+        if isinstance(stmt, php.IfStmt):
+            stmt.then = _strip_bare_returns(stmt.then)
+            stmt.elifs = [(cond, _strip_bare_returns(body)) for cond, body in stmt.elifs]
+            stmt.orelse = _strip_bare_returns(stmt.orelse)
+        elif isinstance(stmt, php.SwitchStmt):
+            for case in stmt.cases:
+                case.body = _strip_bare_returns(case.body)
+        elif isinstance(stmt, (php.WhileStmt, php.DoWhileStmt, php.ForeachStmt)):
+            stmt.body = _strip_bare_returns(stmt.body)
+        elif isinstance(stmt, php.TryStmt):
+            stmt.body = _strip_bare_returns(stmt.body)
+            for clause in stmt.catches:
+                clause.body = _strip_bare_returns(clause.body)
+            if stmt.finally_body is not None:
+                stmt.finally_body = _strip_bare_returns(stmt.finally_body)
+        out.append(stmt)
+    return out
+
+
+def _needs_return_value(return_type: str | None, return_nullable: bool) -> bool:
+    if not return_type or return_nullable:
+        return False
+    return return_type.lower() not in ("void", "mixed", "null")
+
+
 def _drop_trailing_bare_return(
     stmts: list[php.Stmt],
     return_type: str | None = None,
@@ -444,6 +546,23 @@ def _has_side_effects(expr: php.Expr) -> bool:
     return False
 
 
+def _ident_key(value: object) -> str:
+    """Coerce a variable name to a hashable string.
+
+    Operand names normally arrive as strings, but the reconstructor also stores
+    `php.Variable` / `php.Literal` nodes in the same slots. Those nodes are
+    dataclasses without `__hash__`, so using them as set elements raised
+    `TypeError: unhashable type`. Flatten them here instead of at every call.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, php.Variable):
+        return _ident_key(value.name)
+    if isinstance(value, php.Literal):
+        return str(value.value)
+    return str(value)
+
+
 def _get_def_use(stmt: php.Stmt) -> tuple[set[str], set[str]]:
     defs: set[str] = set()
     uses: set[str] = set()
@@ -452,15 +571,18 @@ def _get_def_use(stmt: php.Stmt) -> tuple[set[str], set[str]]:
         if e is None:
             return
         if isinstance(e, php.Variable):
-            uses.add(e.name)
+            uses.add(_ident_key(e.name))
         elif isinstance(e, php.Assign):
             walk_expr(e.value)
             if isinstance(e.target, php.Variable):
-                defs.add(e.target.name)
+                defs.add(_ident_key(e.target.name))
             elif isinstance(e.target, php.DimFetch) and isinstance(e.target.target, php.Variable):
-                dim_name = f"{e.target.target.name}['{getattr(e.target.index, 'value', '')}']"
+                dim_name = (
+                    f"{_ident_key(e.target.target.name)}"
+                    f"['{getattr(e.target.index, 'value', '')}']"
+                )
                 defs.add(dim_name)
-                uses.add(e.target.target.name)
+                uses.add(_ident_key(e.target.target.name))
             else:
                 walk_expr(e.target)
         elif isinstance(e, php.BinaryOp):
@@ -475,7 +597,10 @@ def _get_def_use(stmt: php.Stmt) -> tuple[set[str], set[str]]:
                 walk_expr(getattr(e, "target"))
         elif isinstance(e, php.DimFetch):
             if isinstance(e.target, php.Variable):
-                dim_name = f"{e.target.name}['{getattr(e.index, 'value', '')}']"
+                dim_name = (
+                    f"{_ident_key(e.target.name)}"
+                    f"['{getattr(e.index, 'value', '')}']"
+                )
                 uses.add(dim_name)
             walk_expr(e.target)
             if e.index:

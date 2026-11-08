@@ -35,10 +35,15 @@ _PREC = {
 
 _ASSOCIATIVE = {".", "+", "*", "&&", "||", "&", "|", "^", "and", "or"}
 
+# PHP 8 parses `a == b == c` as a syntax error: these operators do not chain.
+_NON_ASSOCIATIVE = {"==", "!=", "===", "!==", "<", "<=", ">", ">=", "<=>", "instanceof"}
+
 
 class PhpEmitter:
     def __init__(self) -> None:
         self._depth = 0  # statement indentation depth, used by multiline arrays
+        self._write_targets = 0  # >0 while rendering a value written to, not read
+        self._class_depth = 0  # >0 inside a class body; gates self::/static::
 
     def emit_file(self, node: php.PhpFile) -> str:
         lines: list[str] = ["<?php", ""]
@@ -69,7 +74,12 @@ class PhpEmitter:
         pad = INDENT * depth
         self._depth = depth
         if isinstance(stmt, php.ExprStmt):
-            return [f"{pad}{self._expr(stmt.expr)};"]
+            rendered = self._expr(stmt.expr)
+            if rendered in ("", "()"):
+                # A call whose callee decode failed; a bare `;` keeps the
+                # statement slot without asking PHP to parse `();`.
+                return [f"{pad};"]
+            return [f"{pad}{rendered};"]
         if isinstance(stmt, php.EchoStmt):
             args = ", ".join(self._expr(e) for e in stmt.exprs)
             return [f"{pad}echo {args};"]
@@ -116,6 +126,10 @@ class PhpEmitter:
         if isinstance(stmt, php.ThrowStmt):
             return [f"{pad}throw {self._expr(stmt.expr)};"]
         if isinstance(stmt, php.TryStmt):
+            if not stmt.catches and stmt.finally_body is None:
+                # A try with neither catch nor finally is not PHP. The guard
+                # region had no handler, so the body is the whole statement.
+                return self._stmts(stmt.body, depth)
             lines = [f"{pad}try {{", *self._stmts(stmt.body, depth + 1)]
             for clause in stmt.catches:
                 types = " | ".join(clause.class_names) or "Exception"
@@ -184,7 +198,7 @@ class PhpEmitter:
     def _class(self, decl: php.ClassDecl, depth: int) -> list[str]:
         pad = INDENT * depth
         lines = self._doc_comment(decl.doc_comment, pad)
-        keyword = "interface" if decl.is_interface else "class"
+        keyword = "interface" if decl.is_interface else ("trait" if decl.is_trait else "class")
         modifiers = ""
         if decl.is_abstract:
             modifiers = "abstract "
@@ -193,12 +207,17 @@ class PhpEmitter:
         head = f"{pad}{modifiers}{keyword} {decl.name}"
         if decl.parent:
             head += f" extends {decl.parent}"
-        if decl.interfaces:
-            head += " implements " + ", ".join(decl.interfaces)
+        # An interface has no parent entry; ionCube stores its extended
+        # interfaces in the `interfaces` list, which PHP spells `extends`.
+        # A trait implements nothing at all.
+        if decl.interfaces and not decl.is_trait:
+            joiner = " extends " if decl.is_interface else " implements "
+            head += joiner + ", ".join(decl.interfaces)
         lines.append(head + " {")
 
         inner = INDENT * (depth + 1)
         first_member = True
+        self._class_depth += 1
         for const in decl.constants:
             lines.append(f"{inner}const {const.name} = {self._expr(const.value)};")
             first_member = False
@@ -221,6 +240,7 @@ class PhpEmitter:
             if index > 0 or not first_member:
                 lines.append("")
             lines.extend(self._method(method, depth + 1, in_interface=decl.is_interface))
+        self._class_depth -= 1
         lines.append(f"{pad}}}")
         return lines
 
@@ -331,6 +351,10 @@ class PhpEmitter:
         if isinstance(expr, php.ConstFetch):
             return expr.name, _PREC["atom"]
         if isinstance(expr, php.ClassConstFetch):
+            if self._class_depth == 0 and expr.class_name in ("static", "self", "parent"):
+                # Decode lost the owning class of a constant fetched at file
+                # scope; `static::X` there is a compile-time fatal.
+                return expr.const_name, _PREC["atom"]
             return f"{expr.class_name}::{expr.const_name}", _PREC["atom"]
         if isinstance(expr, php.ArrayLiteral):
             return self._array(expr), _PREC["atom"]
@@ -345,7 +369,13 @@ class PhpEmitter:
             return f"{expr.class_name}::${expr.name}", _PREC["postfix"]
         if isinstance(expr, php.DimFetch):
             target = self._expr(expr.target, _PREC["postfix"])
-            index = self._expr(expr.index) if expr.index is not None else ""
+            if expr.index is None:
+                # `$x[]` only parses as an append target; reading it is a
+                # decode artefact from a lost index operand.
+                if self._write_targets:
+                    return f"{target}[]", _PREC["postfix"]
+                return target, _PREC["postfix"]
+            index = self._expr(expr.index)
             return f"{target}[{index}]", _PREC["postfix"]
         if isinstance(expr, php.BinaryOp):
             return self._binary(expr)
@@ -357,17 +387,29 @@ class PhpEmitter:
         if isinstance(expr, php.Cast):
             return f"({expr.type}) {self._expr(expr.operand, _PREC['unary'])}", _PREC["unary"]
         if isinstance(expr, php.Assign):
-            target = self._expr(expr.target, _PREC["postfix"])
+            self._write_targets += 1
+            try:
+                target = self._expr(expr.target, _PREC["postfix"])
+            finally:
+                self._write_targets -= 1
             operator = f"{expr.op}=" if expr.op else "="
             if expr.by_ref:
                 return f"{target} =& {self._expr(expr.value, _PREC['='])}", _PREC["="]
             return f"{target} {operator} {self._expr(expr.value, _PREC['='])}", _PREC["="]
         if isinstance(expr, php.IncDec):
-            target = self._expr(expr.target, _PREC["postfix"])
+            self._write_targets += 1
+            try:
+                target = self._expr(expr.target, _PREC["postfix"])
+            finally:
+                self._write_targets -= 1
             if expr.is_prefix:
                 return f"{expr.op}{target}", _PREC["unary"]
             return f"{target}{expr.op}", _PREC["postfix"]
         if isinstance(expr, php.FuncCall):
+            if isinstance(expr.name, (php.ClosureExpr, php.MatchExpr)):
+                # An immediately-invoked closure needs its own parens; without
+                # them the call target ends at the body's closing brace.
+                return f"({self._expr(expr.name)})({self._args(expr.args)})", _PREC["postfix"]
             name = expr.name if isinstance(expr.name, str) else self._expr(expr.name, _PREC["postfix"])
             return f"{name}({self._args(expr.args)})", _PREC["postfix"]
         if isinstance(expr, php.MethodCall):
@@ -416,7 +458,8 @@ class PhpEmitter:
 
     def _binary(self, expr: php.BinaryOp) -> tuple[str, int]:
         prec = _PREC.get(expr.op, 11)
-        left = self._expr(expr.left, prec)
+        chained = expr.op in _NON_ASSOCIATIVE
+        left = self._expr(expr.left, prec + 1 if chained else prec)
         # Right operand of a left-associative operator needs parens at equal
         # precedence unless the operator chains associatively.
         right_min = prec if expr.op in _ASSOCIATIVE and _same_op(expr.right, expr.op) else prec + 1

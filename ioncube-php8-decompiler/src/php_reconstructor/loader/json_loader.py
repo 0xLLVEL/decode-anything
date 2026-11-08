@@ -77,6 +77,7 @@ def _parse_class(class_id: str, raw: dict[str, Any]) -> PhpClassInfo:
         is_abstract=bool(flags.get("is_abstract") or flags.get("is_explicit_abstract")),
         is_final=bool(flags.get("is_final")),
         is_interface=bool(flags.get("is_interface")),
+        is_trait=bool(flags.get("is_trait")),
         doc_comment=_doc_comment(raw.get("doc_comment")),
     )
 

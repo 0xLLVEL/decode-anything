@@ -46,6 +46,11 @@ from .body import (
     ParseError,
 )
 
+_RESOLVER_CACHE: dict[tuple[str, int], LoaderInternedStringResolver] = {}
+_HANDLER_TABLE_CACHE: dict[tuple[str, int], LoaderHandlerTables] = {}
+_HANDLER_VARIANT_CACHE: dict[tuple[str, int, int, int], int] = {}
+
+
 def _get_dll_candidates(dll_path: Path | None, php_version: int = 81) -> list[Path]:
     if dll_path:
         return [dll_path]
@@ -73,12 +78,16 @@ def _load_handler_tables(dll_path: Path | None, php_version: int = 81) -> Loader
             v = _infer_dll_version(p, default=php_version)
             if v != php_version:
                 print(f"  warning: handler tables {p.name} target PHP {v}, expected PHP {php_version}")
+            cached = _HANDLER_TABLE_CACHE.get((str(p), v))
+            if cached is not None:
+                return cached
             try:
                 ht = LoaderHandlerTables.from_dll(p, php_version=v)
                 ht.source_path = p
                 ht.loaded_php_version = v
                 # Static opcode streams never use runtime observer handlers (ZEND_OBSERVER_NOT_OBSERVED = -1)
                 ht.global_feature_word = 0xFFFFFFFF
+                _HANDLER_TABLE_CACHE[(str(p), v)] = ht
                 print(f"handler tables: {p.name}")
                 return ht
             except Exception as exc:
@@ -96,10 +105,18 @@ def _detect_descriptor_delta(
     serialization_version: int,
     php_flags: int,
 ) -> int:
-    """Detect whether opcode stream delta is 0, 2, 4, 6, or 8."""
+    """Detect the opcode stream delta by scoring return-terminated blocks.
+
+    The delta is not restricted to the even offsets the corpus happened to show;
+    WHMCS 9.1 stamps 5. Scan the plausible window and take the offset that
+    terminates every sampled block, so a miss cannot silently fall through to a
+    default that decodes opcodes into noise.
+    """
     VALID_TERMINALS = {62, 111, 149, 161}
-    candidate_deltas = (2, 4, 6, 0, 8)
+    candidate_deltas = tuple(sorted({5, *(range(0, 32))}))
+    sampled = sum(1 for _, inner in sample_records if inner is not None and inner.block.opcode_count >= 1)
     scores = {d: 0 for d in candidate_deltas}
+    streams: dict[int, list] = {d: [] for d in candidate_deltas}
     for delta in candidate_deltas:
         for rec, inner in sample_records:
             if inner is None or inner.block.opcode_count < 1:
@@ -113,12 +130,54 @@ def _detect_descriptor_delta(
                     header_flags=php_flags,
                     descriptor_delta=delta,
                 )
-                if xor.decoded_opcode_bytes and xor.decoded_opcode_bytes[-1] in VALID_TERMINALS:
-                    scores[delta] += 1
+                if xor.decoded_opcode_bytes:
+                    streams[delta].append(xor.decoded_opcode_bytes)
+                    if xor.decoded_opcode_bytes[-1] in VALID_TERMINALS:
+                        scores[delta] += 1
             except Exception:
                 pass
-    best = max(scores, key=lambda d: scores[d])
-    print(f"opcode stream descriptor delta: {best}  (scores: {scores})")
+
+    names = load_opcode_names()
+
+    def named_ratio(delta: int) -> float:
+        """Fraction of decoded opcode bytes that name a real opcode.
+
+        A wrong delta shifts the stream by a byte, so operand bytes land where
+        opcodes belong and name nothing. This separates a correct delta from a
+        coincidental one even when both happen to end in a return.
+        """
+        total = named_count = 0
+        for lane in streams[delta]:
+            for byte in lane:
+                total += 1
+                if byte in names:
+                    named_count += 1
+        return named_count / total if total else 0.0
+
+    ratios = {d: named_ratio(d) for d in candidate_deltas}
+
+    # Termination alone is not proof: a single sampled block can end in a return
+    # by luck. Coverage of the opcode table is the stronger signal, so it ranks
+    # first; termination breaks ties, and the loader-typical offset breaks the
+    # remaining ones.
+    def rank(delta: int) -> tuple:
+        return (
+            round(ratios[delta], 6),
+            1 if sampled and scores[delta] == sampled else 0,
+            1 if delta == 5 else 0,
+            -delta,
+        )
+
+    best = max(candidate_deltas, key=rank)
+
+    top = sorted(candidate_deltas, key=rank, reverse=True)[:3]
+    detail = ", ".join(
+        f"{d}:{scores[d]}/{sampled}@{ratios[d]:.2f}" for d in top
+    )
+    print(
+        f"opcode stream descriptor delta: {best}  "
+        f"(top: {detail}; scores: {scores})"
+    )
     return best
 
 
@@ -730,10 +789,14 @@ def _load_resolver(dll_path: Path | None, php_version: int = 81) -> LoaderIntern
             v = _infer_dll_version(p, default=php_version)
             if v != php_version:
                 print(f"  warning: resolver {p.name} targets PHP {v}, expected PHP {php_version}")
+            cached = _RESOLVER_CACHE.get((str(p), v))
+            if cached is not None:
+                return cached
             try:
                 r = LoaderInternedStringResolver.from_dll(p, php_version=v)
                 r.source_path = p
                 r.loaded_php_version = v
+                _RESOLVER_CACHE[(str(p), v)] = r
                 print(f"interned-string resolver: {p.name}")
                 return r
             except Exception as exc:
@@ -1717,9 +1780,20 @@ def dump_file_to_ir(
                 pass
         if decoded_samples:
             pref = 6 if (target_php_version >= 84 or descriptor_delta == 6) else 0
-            handler_variant = _detect_handler_variant(
-                handler_tables, decoded_samples, preferred_variant=pref
+            variant_key = (
+                str(getattr(handler_tables, "source_path", "")),
+                target_php_version,
+                sv,
+                descriptor_delta,
             )
+            cached_variant = _HANDLER_VARIANT_CACHE.get(variant_key)
+            if cached_variant is not None:
+                handler_variant = cached_variant
+            else:
+                handler_variant = _detect_handler_variant(
+                    handler_tables, decoded_samples, preferred_variant=pref
+                )
+                _HANDLER_VARIANT_CACHE[variant_key] = handler_variant
 
     if main_inner is not None:
         if resolver:
