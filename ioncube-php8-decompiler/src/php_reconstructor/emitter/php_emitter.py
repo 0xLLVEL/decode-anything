@@ -538,7 +538,7 @@ class PhpEmitter:
         if isinstance(value, PhpBytes):
             raw = bytes(value)
             decoded = try_decode_ioncube_array(raw)
-            if decoded is not None:
+            if decoded:
                 return self._array(_ioncube_to_array_literal(decoded))
             try:
                 as_str = raw.decode('utf-8')
@@ -548,9 +548,11 @@ class PhpEmitter:
                 pass
             return _double_quoted_bytes(raw)
         if isinstance(value, str):
-            if value.startswith('['):
+            if len(value) > 2 and value.startswith('['):
+                # A serialized array is only meaningful when it decodes to
+                # something; a bare "[" is a plain string literal.
                 decoded = try_decode_ioncube_array(value.encode('latin-1'))
-                if decoded is not None:
+                if decoded:
                     return self._array(_ioncube_to_array_literal(decoded))
             return _quote_string(value)
         if isinstance(value, (list, tuple)):
